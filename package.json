@@ -6,7 +6,7 @@
   "publisher": "rgd-tools",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cannibaltoast/windsurf-project"
+    "url": "https://github.com/CannibalToast/rgd-suite"
   },
   "license": "MIT",
   "engines": {
