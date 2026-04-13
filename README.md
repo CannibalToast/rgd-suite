@@ -89,7 +89,7 @@ npm run build-all   # compiles + packages rgd-suite-<version>.vsix
 
 ## Credits
 
-The hash dictionary (`RGD_DIC.TXT`) and the foundational RGD ↔ Lua conversion techniques used in this extension are derived from **[Corsix's Mod Studio](https://github.com/corsix/coh-formats)** by [Corsix](https://github.com/corsix).
+The hash dictionary (`RGD_DIC.TXT`) and the foundational RGD ↔ Lua conversion techniques used in this extension are derived from **[Corsix's Mod Studio](http://modstudio.corsix.org)**
 Without his original research into the Relic binary format and his hash dictionary, none of this would have been possible.
 
 ## License
