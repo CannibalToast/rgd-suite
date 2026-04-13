@@ -1,0 +1,112 @@
+{
+        "name": "RGD Text",
+        "scopeName": "source.rgd",
+        "patterns": [
+                {
+                        "include": "#comments"
+                },
+                {
+                        "include": "#strings"
+                },
+                {
+                        "include": "#numbers"
+                },
+                {
+                        "include": "#keywords"
+                },
+                {
+                        "include": "#types"
+                },
+                {
+                        "include": "#properties"
+                },
+                {
+                        "include": "#braces"
+                }
+        ],
+        "repository": {
+                "comments": {
+                        "patterns": [
+                                {
+                                        "name": "comment.line.number-sign.rgd",
+                                        "match": "#.*$"
+                                },
+                                {
+                                        "name": "comment.line.dash.rgd",
+                                        "match": "\\s-\\s.*$"
+                                }
+                        ]
+                },
+                "strings": {
+                        "patterns": [
+                                {
+                                        "name": "string.quoted.double.rgd",
+                                        "begin": "\"",
+                                        "end": "\"",
+                                        "patterns": [
+                                                {
+                                                        "name": "constant.character.escape.rgd",
+                                                        "match": "\\\\."
+                                                }
+                                        ]
+                                }
+                        ]
+                },
+                "numbers": {
+                        "patterns": [
+                                {
+                                        "name": "constant.numeric.float.rgd",
+                                        "match": "\\b-?\\d+\\.\\d+\\b"
+                                },
+                                {
+                                        "name": "constant.numeric.integer.rgd",
+                                        "match": "\\b-?\\d+\\b"
+                                },
+                                {
+                                        "name": "constant.numeric.hex.rgd",
+                                        "match": "\\b0x[0-9A-Fa-f]+\\b"
+                                }
+                        ]
+                },
+                "keywords": {
+                        "patterns": [
+                                {
+                                        "name": "constant.language.boolean.rgd",
+                                        "match": "\\b(true|false)\\b"
+                                },
+                                {
+                                        "name": "keyword.other.reference.rgd",
+                                        "match": "\\$REF"
+                                },
+                                {
+                                        "name": "entity.name.tag.rgd",
+                                        "match": "^\\s*GameData\\b"
+                                }
+                        ]
+                },
+                "types": {
+                        "patterns": [
+                                {
+                                        "name": "storage.type.rgd",
+                                        "match": ":\\s*(float|int|bool|string|wstring)\\s*="
+                                }
+                        ]
+                },
+                "properties": {
+                        "patterns": [
+                                {
+                                        "name": "variable.other.property.rgd",
+                                        "match": "^\\s*[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*[:{])"
+                                }
+                        ]
+                },
+                "braces": {
+                        "patterns": [
+                                {
+                                        "name": "punctuation.definition.block.rgd",
+                                        "match": "[{}]"
+                                }
+                        ]
+                }
+        }
+}

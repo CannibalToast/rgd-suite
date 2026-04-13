@@ -1,0 +1,482 @@
+/* RGD Editor - Theme-agnostic CSS using VS Code CSS variables */
+/* Corsix-style layout: Tree on left, Property grid on right */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+    font-size: var(--vscode-font-size, 13px);
+    background: var(--vscode-editor-background);
+    color: var(--vscode-editor-foreground);
+    overflow: hidden;
+    height: 100vh;
+}
+
+/* Main Layout - Corsix style split view */
+.rgd-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+/* Toolbar */
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--vscode-titleBar-activeBackground, var(--vscode-editor-background));
+    border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+}
+
+.toolbar-title {
+    font-weight: 600;
+    flex: 1;
+}
+
+.toolbar-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 10px;
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    gap: 4px;
+    transition: background 0.15s;
+}
+
+.toolbar-btn:hover {
+    background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.toolbar-btn.primary {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
+.toolbar-btn.primary:hover {
+    background: var(--vscode-button-hoverBackground);
+}
+
+/* Split View Container */
+.split-view {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* Left Panel - Tree View (Tables) */
+.tree-panel {
+    width: 280px;
+    min-width: 180px;
+    display: flex;
+    flex-direction: column;
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    border-right: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+}
+
+.tree-header {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--vscode-sideBarSectionHeader-foreground);
+    background: var(--vscode-sideBarSectionHeader-background);
+    border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.tree-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+
+/* Tree Node Styles */
+.tree-node {
+    user-select: none;
+}
+
+.tree-row {
+    display: flex;
+    align-items: center;
+    padding: 3px 8px;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.tree-row:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.tree-row.selected {
+    background: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
+}
+
+.tree-row.selected:hover {
+    background: var(--vscode-list-activeSelectionBackground);
+}
+
+.tree-toggle {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--vscode-icon-foreground);
+    font-size: 10px;
+    flex-shrink: 0;
+}
+
+.tree-toggle.collapsed::before { content: '▶'; }
+.tree-toggle.expanded::before { content: '▼'; }
+.tree-toggle.leaf { visibility: hidden; }
+
+.tree-icon {
+    width: 16px;
+    height: 16px;
+    margin-right: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.tree-label {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tree-badge {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 8px;
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+    margin-left: 6px;
+}
+
+.tree-children {
+    display: none;
+}
+
+.tree-children.expanded {
+    display: block;
+}
+
+/* Right Panel - Property Grid */
+.property-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--vscode-editor-background);
+    min-width: 300px;
+}
+
+.property-header {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--vscode-sideBarSectionHeader-foreground);
+    background: var(--vscode-sideBarSectionHeader-background);
+    border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.property-content {
+    flex: 1;
+    overflow-y: auto;
+}
+
+/* Property Grid Table */
+.property-grid {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.property-grid th {
+    text-align: left;
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--vscode-descriptionForeground);
+    background: var(--vscode-editorWidget-background);
+    border-bottom: 1px solid var(--vscode-panel-border);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.property-row {
+    border-bottom: 1px solid var(--vscode-panel-border);
+    transition: background 0.1s;
+}
+
+.property-row:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.property-row.category {
+    background: var(--vscode-editorWidget-background);
+}
+
+.property-name {
+    padding: 6px 12px;
+    font-weight: 500;
+    width: 40%;
+    vertical-align: middle;
+    color: var(--vscode-symbolIcon-propertyForeground, var(--vscode-editor-foreground));
+}
+
+.property-name .type-badge {
+    font-size: 10px;
+    font-weight: normal;
+    padding: 1px 4px;
+    border-radius: 3px;
+    margin-left: 6px;
+    background: var(--vscode-textCodeBlock-background);
+    color: var(--vscode-descriptionForeground);
+}
+
+.property-value {
+    padding: 4px 12px;
+    vertical-align: middle;
+}
+
+.property-input {
+    width: 100%;
+    padding: 4px 8px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 3px;
+    font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+    font-size: var(--vscode-editor-font-size, 13px);
+}
+
+.property-input:focus {
+    outline: none;
+    border-color: var(--vscode-focusBorder);
+}
+
+.property-input[type="number"] {
+    text-align: right;
+}
+
+.property-input.boolean {
+    width: auto;
+    cursor: pointer;
+}
+
+.property-input.reference {
+    font-style: italic;
+    color: var(--vscode-textLink-foreground);
+}
+
+/* Category Row */
+.category-row {
+    background: var(--vscode-editorWidget-background);
+    cursor: pointer;
+}
+
+.category-row td {
+    padding: 6px 12px;
+    font-weight: 600;
+}
+
+.category-toggle {
+    display: inline-block;
+    width: 16px;
+    margin-right: 4px;
+}
+
+/* Status Bar */
+.status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 12px;
+    font-size: 12px;
+    background: var(--vscode-statusBar-background);
+    color: var(--vscode-statusBar-foreground);
+    border-top: 1px solid var(--vscode-panel-border);
+}
+
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.status-modified {
+    color: var(--vscode-gitDecoration-modifiedResourceForeground);
+}
+
+/* Empty State */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--vscode-descriptionForeground);
+    text-align: center;
+    padding: 40px;
+}
+
+.empty-state-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+
+/* Resizer */
+.resizer {
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    transition: background 0.15s;
+}
+
+.resizer:hover, .resizer.active {
+    background: var(--vscode-focusBorder);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--vscode-scrollbarSlider-background);
+    border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+::-webkit-scrollbar-thumb:active {
+    background: var(--vscode-scrollbarSlider-activeBackground);
+}
+
+/* Animation for expand/collapse */
+.tree-children {
+    overflow: hidden;
+    transition: max-height 0.2s ease-out;
+}
+
+/* Search highlight */
+.highlight {
+    background: var(--vscode-editor-findMatchHighlightBackground);
+    border: 1px solid var(--vscode-editor-findMatchHighlightBorder);
+}
+
+/* Reference links */
+.ref-link {
+    color: var(--vscode-textLink-foreground);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.ref-link:hover {
+    color: var(--vscode-textLink-activeForeground);
+    text-decoration: underline;
+}
+
+.property-header .ref-link {
+    font-weight: 600;
+}
+
+/* Section headers (Properties, Table Children) */
+.section-header td {
+    padding: 8px 12px;
+    font-weight: 600;
+    background: var(--vscode-sideBarSectionHeader-background);
+    color: var(--vscode-sideBarSectionHeader-foreground);
+    border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.section-header .section-ref {
+    text-align: right;
+    font-weight: normal;
+}
+
+/* Tree ref links */
+.tree-ref-link {
+    color: var(--vscode-textLink-foreground);
+    text-decoration: none;
+}
+
+.tree-ref-link:hover {
+    color: var(--vscode-textLink-activeForeground);
+    text-decoration: underline;
+}
+
+/* Collapsible sections */
+.collapsible-section {
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.collapsible-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+.collapsible-header:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.collapse-icon {
+    display: inline-block;
+    width: 16px;
+    text-align: center;
+    margin-right: 4px;
+}
+
+.collapsible-content {
+    transition: max-height 0.2s ease-out;
+}
+
+.collapsible-content.collapsed {
+    display: none;
+}
+
+/* Editable inputs */
+.editable-value {
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+    padding: 4px 8px;
+    border-radius: 3px;
+    width: 100%;
+    font-family: inherit;
+    font-size: inherit;
+}
+
+.editable-value:focus {
+    outline: none;
+    border-color: var(--vscode-focusBorder);
+}
+
+.editable-value[type="checkbox"] {
+    width: auto;
+    cursor: pointer;
+}

@@ -1,0 +1,17 @@
+src/**
+**/*.ts
+.vscode/**
+tsconfig.json
+**/*.map
+node_modules/**
+**/test/**
+**/tests/**
+.git/**
+.gitignore
+*.vsix
+build-vsix.ps1
+**/*.md
+!README.md
+.eslintrc*
+!dictionaries/**
+bundled/**

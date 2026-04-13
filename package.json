@@ -1,0 +1,314 @@
+{
+  "name": "rgd-suite",
+  "displayName": "RGD Suite",
+  "description": "Complete toolkit for Relic Game Data (RGD) files — table editor, Lua↔RGD conversion, SGA extraction, and CLI commands for Dawn of War / Company of Heroes modding",
+  "version": "1.1.0",
+  "publisher": "rgd-tools",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cannibaltoast/windsurf-project"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "*",
+    "onFileSystem:rgd",
+    "workspaceContains:**/*.rgd",
+    "onCommand:rgdEditor.openRgd",
+    "onLanguage:rgd-text",
+    "onCommand:rgd.fromLua",
+    "onCommand:rgd.toLua",
+    "onCommand:rgd.info",
+    "onCommand:rgd.validate",
+    "onCommand:rgdSuite.checkParity",
+    "onCommand:rgdSuite.batchCheckParity"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "rgdEditor.rgdEditor",
+        "displayName": "RGD Table Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.rgd"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "languages": [
+      {
+        "id": "rgd-text",
+        "aliases": [
+          "RGD Text",
+          "rgd-text"
+        ],
+        "extensions": [
+          ".rgd.txt"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rgd-text",
+        "scopeName": "source.rgd",
+        "path": "./syntaxes/rgd.tmLanguage.json"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "rgdTree",
+          "name": "RGD Tree",
+          "when": "resourceExtname == .rgd || resourceExtname == .txt && resourceFilename =~ /\\.rgd\\.txt$/",
+          "icon": "$(database)"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "rgdEditor.openRgd",
+        "title": "RGD: Open (Table Editor)"
+      },
+      {
+        "command": "rgdEditor.openRgdText",
+        "title": "RGD: Open (Plain Text Editor)"
+      },
+      {
+        "command": "rgdEditor.convertToText",
+        "title": "RGD: Convert to Text Format"
+      },
+      {
+        "command": "rgdEditor.convertToBinary",
+        "title": "RGD: Convert Text to Binary"
+      },
+      {
+        "command": "rgdEditor.showInfo",
+        "title": "RGD: Show File Info"
+      },
+      {
+        "command": "rgdEditor.extractFromSga",
+        "title": "RGD: Extract from SGA Archive"
+      },
+      {
+        "command": "rgdEditor.dumpToLua",
+        "title": "RGD: Dump to Lua"
+      },
+      {
+        "command": "rgdEditor.compileToRgd",
+        "title": "RGD: Compile Lua to RGD"
+      },
+      {
+        "command": "rgdEditor.editValue",
+        "title": "RGD: Edit Value",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "rgdEditor.batchToLua",
+        "title": "RGD: Batch Convert Folder to Lua"
+      },
+      {
+        "command": "rgdEditor.batchToRgd",
+        "title": "RGD: Batch Compile Folder to RGD"
+      },
+      {
+        "command": "rgdEditor.selectLocaleFolder",
+        "title": "RGD: Select Locale Folder"
+      },
+      {
+        "command": "rgdEditor.refreshTree",
+        "title": "RGD: Refresh Tree View"
+      },
+      {
+        "command": "rgd.fromLua",
+        "title": "RGD: Convert Lua to RGD (CLI)",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgd.toLua",
+        "title": "RGD: Convert RGD to Lua (CLI)",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgd.info",
+        "title": "RGD: Show RGD Info (CLI)",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgd.validate",
+        "title": "RGD: Validate File (CLI)",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.checkParity",
+        "title": "RGD: Check Parity (RGD ↔ Lua)",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.batchCheckParity",
+        "title": "RGD: Batch Parity Check (Folder)",
+        "category": "RGD Suite"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdEditor.openRgd",
+          "group": "navigation"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdEditor.openRgdText",
+          "group": "navigation"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdEditor.showInfo",
+          "group": "rgd"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdEditor.selectLocaleFolder",
+          "group": "rgd"
+        },
+        {
+          "when": "resourceExtname == .sga",
+          "command": "rgdEditor.extractFromSga",
+          "group": "rgd"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdEditor.dumpToLua",
+          "group": "rgd@1"
+        },
+        {
+          "when": "resourceExtname == .lua",
+          "command": "rgdEditor.compileToRgd",
+          "group": "rgd@1"
+        },
+        {
+          "when": "resourceExtname == .lua",
+          "command": "rgd.fromLua",
+          "group": "rgd@2"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgd.toLua",
+          "group": "rgd@2"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgd.info",
+          "group": "rgd@2"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgd.validate",
+          "group": "rgd@2"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdSuite.checkParity",
+          "group": "rgd@3"
+        },
+        {
+          "when": "resourceExtname == .lua",
+          "command": "rgdSuite.checkParity",
+          "group": "rgd@3"
+        },
+        {
+          "when": "explorerResourceIsFolder",
+          "command": "rgdSuite.batchCheckParity",
+          "group": "rgd@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "when": "view == rgdTree && viewItem == rgdValue",
+          "command": "rgdEditor.editValue",
+          "group": "inline"
+        },
+        {
+          "when": "view == rgdTree",
+          "command": "rgdEditor.revealNode",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "RGD Suite",
+      "properties": {
+        "rgdEditor.dictionaryPaths": {
+          "type": "array",
+          "default": [],
+          "description": "Paths to additional hash dictionary files (.dic or .txt)"
+        },
+        "rgdEditor.autoConvertOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically convert text format back to binary on save"
+        },
+        "rgdEditor.defaultRgdVersion": {
+          "type": "number",
+          "default": 1,
+          "enum": [1, 3],
+          "description": "Default RGD version when creating new files"
+        },
+        "rgdEditor.createTextSidecarOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "When opening a .rgd file, also emit a .rgd.txt sidecar for direct text editing"
+        },
+        "rgdEditor.preferredLanguage": {
+          "type": "string",
+          "default": "Chinese",
+          "enum": [
+            "English",
+            "Chinese",
+            "SChinese",
+            "Japanese",
+            "German",
+            "French",
+            "Spanish",
+            "Italian",
+            "Russian",
+            "Korean",
+            "Polish"
+          ],
+          "description": "Preferred language for UCS string resolution"
+        },
+        "rgdSuite.attribPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to attrib folder for resolving references (auto-detected if empty)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --resolve-extensions=.ts,.js --tsconfig=tsconfig.json",
+    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --resolve-extensions=.ts,.js --tsconfig=tsconfig.json --watch",
+    "package": "vsce package --no-dependencies --allow-star-activation",
+    "build-all": "npm run build && npm run package",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "@vscode/vsce": "^2.0.0",
+    "esbuild": "^0.19.12",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@exodus/bytes": "^1.8.0"
+  }
+}
