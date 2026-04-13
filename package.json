@@ -297,7 +297,7 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --resolve-extensions=.ts,.js --tsconfig=tsconfig.json",
     "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --resolve-extensions=.ts,.js --tsconfig=tsconfig.json --watch",
-    "package": "vsce package --no-dependencies --allow-star-activation",
+    "package": "vsce package --no-dependencies --allow-star-activation && node -e \"const {execSync,version}=require('child_process'),p=require('./package.json');const src='rgd-suite-'+p.version+'.vsix';require('fs').copyFileSync(src,'rgd-suite-latest.vsix');console.log('Copied '+src+' -> rgd-suite-latest.vsix')\"",
     "build-all": "npm run build && npm run package",
     "vscode:prepublish": "npm run build"
   },

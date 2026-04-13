@@ -8,10 +8,12 @@ Merges **RGD Editor** and **RGD CLI** into a single package with an embedded has
 
 ## Install
 
-Download `rgd-suite-<version>.vsix` from the [Releases](https://github.com/CannibalToast/rgd-suite/releases) page and either:
+[![Latest Release](https://img.shields.io/github/v/release/CannibalToast/rgd-suite?label=latest&color=blue)](https://github.com/CannibalToast/rgd-suite/releases/latest)
 
-- Drag and drop it into the Extensions panel, or
-- Run: `code --install-extension rgd-suite-<version>.vsix`
+Download from the [Releases](https://github.com/CannibalToast/rgd-suite/releases/latest) page and either:
+
+- Drag and drop the `.vsix` into the Extensions panel, or
+- Run: `code --install-extension rgd-suite-latest.vsix`
 
 ## Features
 
