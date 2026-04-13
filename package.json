@@ -1,7 +1,7 @@
 {
   "name": "rgd-suite",
   "displayName": "RGD Suite",
-  "description": "Complete toolkit for Relic Game Data (RGD) files — table editor, Lua↔RGD conversion, SGA extraction, and CLI commands for Dawn of War / Company of Heroes modding",
+  "description": "Corsix, but for VS Code! Complete toolkit for Relic Game Data (RGD) files — table editor, Lua↔RGD conversion, SGA extraction, parity checker, and CLI commands for Dawn of War / Company of Heroes modding.",
   "version": "1.1.0",
   "publisher": "rgd-tools",
   "repository": {
