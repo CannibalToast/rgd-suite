@@ -90,7 +90,7 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
             const finalVersion = cached?.version ?? version;
             const binaryBuffer = buildRgd(gameData, dict, finalVersion);
             fs.writeFileSync(realPath, binaryBuffer);
-            this.fileCache.set(realPath, { version: finalVersion, mtime: Date.now() });
+            this.fileCache.delete(realPath);
             this._emitter.fire([{ type: vscode.FileChangeType.Changed, uri }]);
             vscode.window.setStatusBarMessage(`✓ Saved ${path.basename(realPath)}`, 2000);
         } catch (error: any) {

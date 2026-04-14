@@ -11,7 +11,7 @@ function getAttribPath(filePath: string): string {
     const cfg = vscode.workspace.getConfiguration();
     const configured = cfg.get<string>('rgdSuite.attribPath');
     if (configured && configured.trim().length > 0) {
-        return path.isAbsolute(configured) ? configured : path.join(filePath, configured);
+        return path.isAbsolute(configured) ? configured : path.join(path.dirname(filePath), configured);
     }
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(filePath);
     return path.join(root, 'data', 'attrib');

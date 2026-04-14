@@ -14,6 +14,7 @@ export class ParityWorkerPool {
     private readonly idle: Worker[] = [];
     private readonly queue: WorkItem[] = [];
     private readonly pending = new Map<number, WorkItem>();
+    private readonly workerJob = new Map<Worker, number>();
     private nextId = 0;
     private disposed = false;
 
@@ -25,27 +26,38 @@ export class ParityWorkerPool {
     ) { }
 
     start(): void {
-        for (let i = 0; i < this.size; i++) {
-            const w = new Worker(this.scriptPath, {
-                workerData: { distPath: this.distPath, dictPaths: this.dictPaths }
-            });
-            w.on('message', (msg: { id: number; result?: ParityResult; error?: string }) => {
-                const item = this.pending.get(msg.id);
-                if (!item) return;
-                this.pending.delete(msg.id);
-                this.idle.push(w);
-                this.drain();
-                if (msg.error) item.reject(new Error(msg.error));
-                else           item.resolve(msg.result!);
-            });
-            w.on('error', (err) => {
-                this.idle.push(w);
-                this.drain();
-                console.error('[ParityWorkerPool] worker error:', err.message);
-            });
-            this.workers.push(w);
+        for (let i = 0; i < this.size; i++) this.spawnWorker();
+    }
+
+    private spawnWorker(): void {
+        const w = new Worker(this.scriptPath, {
+            workerData: { distPath: this.distPath, dictPaths: this.dictPaths }
+        });
+        w.on('message', (msg: { id: number; result?: ParityResult; error?: string }) => {
+            const item = this.pending.get(msg.id);
+            if (!item) return;
+            this.pending.delete(msg.id);
+            this.workerJob.delete(w);
             this.idle.push(w);
-        }
+            this.drain();
+            if (msg.error) item.reject(new Error(msg.error));
+            else           item.resolve(msg.result!);
+        });
+        w.on('error', (err) => {
+            console.error('[ParityWorkerPool] worker error:', err.message);
+            const jobId = this.workerJob.get(w);
+            this.workerJob.delete(w);
+            if (jobId !== undefined) {
+                const item = this.pending.get(jobId);
+                if (item) { this.pending.delete(jobId); item.reject(err); }
+            }
+            const idx = this.workers.indexOf(w);
+            if (idx !== -1) this.workers.splice(idx, 1);
+            if (!this.disposed) { this.spawnWorker(); }
+            this.drain();
+        });
+        this.workers.push(w);
+        this.idle.push(w);
     }
 
     check(rgdPath: string, luaPath: string): Promise<ParityResult> {
@@ -67,6 +79,7 @@ export class ParityWorkerPool {
         this.cancel();
         for (const [, item] of this.pending) item.reject(new Error('Pool disposed'));
         this.pending.clear();
+        this.workerJob.clear();
         for (const w of this.workers) w.terminate();
         this.workers.length = 0;
         this.idle.length = 0;
@@ -77,6 +90,7 @@ export class ParityWorkerPool {
             const w    = this.idle.pop()!;
             const item = this.queue.shift()!;
             this.pending.set(item.id, item);
+            this.workerJob.set(w, item.id);
             w.postMessage({ id: item.id, rgdPath: item.rgdPath, luaPath: item.luaPath });
         }
     }

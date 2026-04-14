@@ -28,7 +28,7 @@ $include = @(
 )
 
 # Folders to include recursively
-$includeDirs = @("media", "syntaxes", "dictionaries", "workers")
+$includeDirs = @("media", "syntaxes", "dictionaries", "workers", "bundled")
 
 foreach ($f in $include) {
     $src = Join-Path $Root $f
@@ -89,8 +89,8 @@ $manifest = @"
     <Tags>rgd,relic,dawn of war,company of heroes,lua,modding</Tags>
     <Categories>Other</Categories>
     <GalleryFlags>Public</GalleryFlags>
-    <License>extension/LICENSE</License>
-    <Icon>extension/icon.png</Icon>
+    <License>LICENSE</License>
+    <Icon>icon.png</Icon>
   </Metadata>
   <Installation>
     <InstallationTarget Id="Microsoft.VisualStudio.Code"/>

@@ -114,7 +114,7 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
                             const reloadDict = this.dictionaryManager.getDictionary(this.context);
                             const reloadRgd = parseRgd(reloadBuffer, reloadDict);
                             const reloadLocaleMap = LocaleManager.getInstance().getLocaleMap(document.uri.fsPath);
-                            document.nodes = rgdToTree(reloadRgd.gameData, undefined, reloadLocaleMap);
+                            document.nodes = rgdToTree(reloadRgd.gameData, attribRoot, reloadLocaleMap);
                             document.isDirty = false;
                             webviewPanel.webview.postMessage({ type: 'saved' });
                             webviewPanel.webview.postMessage({ type: 'loadData', data: document.nodes });

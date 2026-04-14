@@ -84,8 +84,6 @@ export class RgdTreeProvider implements vscode.TreeDataProvider<RgdTreeItem> {
         }
 
         if (!realPath) return;
-        if (this.sourceUri && this.sourceUri.fsPath === realPath) return;
-
         await this.loadFromUri(vscode.Uri.file(realPath));
     }
 
@@ -165,7 +163,7 @@ export class RgdTreeProvider implements vscode.TreeDataProvider<RgdTreeItem> {
             return this.nodes.map((n, idx) => this.toItem(n, [idx]));
         }
         if (!element.node.children) return [];
-        return element.node.children.map((n, idx) => this.toItem(n, [idx, ...element.nodePath]));
+        return element.node.children.map((n, idx) => this.toItem(n, [...element.nodePath, idx]));
     }
 
     private toItem(node: RgdNode, nodePath: number[]): RgdTreeItem {

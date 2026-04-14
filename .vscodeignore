@@ -14,4 +14,4 @@ build-vsix.ps1
 !README.md
 .eslintrc*
 !dictionaries/**
-bundled/**
+bundled/**/node_modules/**
