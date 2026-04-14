@@ -1,19 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as vscode from 'vscode';
 import { LocaleEntry } from '../bundled/rgd-tools/dist/types';
 
-let localeOutputChannel: vscode.OutputChannel | undefined;
-
-function getLocaleLog(): vscode.OutputChannel {
-  if (!localeOutputChannel) {
-    localeOutputChannel = vscode.window.createOutputChannel('RGD Locale');
-  }
-  return localeOutputChannel;
-}
-
 function log(message: string) {
-  getLocaleLog().appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
   console.log(`[RGD Locale] ${message}`);
 }
 

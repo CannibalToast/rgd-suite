@@ -4,9 +4,8 @@ import * as fs from 'fs';
 import { parseRgd, readRgdFile } from '../bundled/rgd-tools/dist/reader';
 import { rgdToText, textToRgd } from '../bundled/rgd-tools/dist/textFormat';
 import { writeRgdFile } from '../bundled/rgd-tools/dist/writer';
-import { rgdToLua, luaToRgdResolved, rgdToLuaDifferential, ParsedLuaTable, ParentLoader, RgdParentLoader, LuaFileLoader, parseLuaToTable } from '../bundled/rgd-tools/dist/luaFormat';
-import { RgdTable } from '../bundled/rgd-tools/dist/types';
-import { HashDictionary } from '../bundled/rgd-tools/dist/dictionary';
+import { luaToRgdResolved, rgdToLuaDifferential } from '../bundled/rgd-tools/dist/luaFormat';
+import { findAttribBase, makeLuaParentLoader, makeRgdParentLoader, countEntries, collectFiles } from './attribUtils';
 import { openSgaArchive } from '../bundled/rgd-tools/dist/sga';
 import { DictionaryManager } from './dictionaryManager';
 import { LocaleManager } from './localeManager';
@@ -14,7 +13,7 @@ import { LocaleManager } from './localeManager';
 export class RgdCommands {
     constructor(private readonly context: vscode.ExtensionContext) { }
 
-    private getDictionary(): HashDictionary {
+    private getDictionary() {
         return DictionaryManager.getInstance().getDictionary(this.context);
     }
 
@@ -88,19 +87,7 @@ export class RgdCommands {
             const buffer = Buffer.from(fileData);
             const dict = this.getDictionary();
             const rgdFile = parseRgd(buffer, dict);
-
-            let totalEntries = 0;
-            let tableCount = 0;
-            const countEntries = (entries: any[]) => {
-                for (const e of entries) {
-                    totalEntries++;
-                    if ((e.type === 100 || e.type === 101) && e.value?.entries) {
-                        tableCount++;
-                        countEntries(e.value.entries);
-                    }
-                }
-            };
-            countEntries(rgdFile.gameData.entries);
+            const { totalEntries, tableCount } = countEntries(rgdFile.gameData.entries);
 
             const info = [
                 `File: ${path.basename(uri.fsPath)}`,
@@ -189,13 +176,6 @@ export class RgdCommands {
         }
     }
 
-    private findAttribBase(filePath: string): string | null {
-        const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-        const attribIndex = normalized.lastIndexOf('/attrib/');
-        if (attribIndex !== -1) return filePath.substring(0, attribIndex + '/attrib'.length);
-        return null;
-    }
-
     async dumpToLua(uri?: vscode.Uri): Promise<void> {
         uri = uri || vscode.window.activeTextEditor?.document.uri;
 
@@ -210,28 +190,8 @@ export class RgdCommands {
             const buffer = Buffer.from(fileData);
             const dict = this.getDictionary();
             const rgdFile = parseRgd(buffer, dict);
-            const attribBase = this.findAttribBase(uri.fsPath);
-
-            const luaFileLoader: LuaFileLoader = (refPath: string): string | null => {
-                if (!attribBase) return null;
-                let cleanPath = refPath.replace(/\\/g, '/');
-                if (cleanPath.endsWith('.lua')) cleanPath = cleanPath.slice(0, -4);
-                const luaPath = path.join(attribBase, cleanPath + '.lua');
-                if (fs.existsSync(luaPath)) return fs.readFileSync(luaPath, 'utf8');
-                const rgdPath = path.join(attribBase, cleanPath + '.rgd');
-                if (fs.existsSync(rgdPath)) {
-                    const parentRgd = parseRgd(Buffer.from(fs.readFileSync(rgdPath)), dict);
-                    return rgdToLua(parentRgd);
-                }
-                return null;
-            };
-
-            const parentLoader: ParentLoader = async (refPath: string): Promise<ParsedLuaTable | null> => {
-                const luaCode = luaFileLoader(refPath);
-                if (!luaCode) return null;
-                return parseLuaToTable(luaCode, luaFileLoader);
-            };
-
+            const attribBase = findAttribBase(uri.fsPath);
+            const parentLoader = makeLuaParentLoader(attribBase, dict);
             const luaCode = await rgdToLuaDifferential(rgdFile, parentLoader);
             const outputPath = uri.fsPath.replace(/\.rgd$/i, '.lua');
             fs.writeFileSync(outputPath, luaCode, 'utf8');
@@ -255,26 +215,8 @@ export class RgdCommands {
         try {
             const luaCode = fs.readFileSync(uri.fsPath, 'utf8');
             const dict = this.getDictionary();
-            const attribBase = this.findAttribBase(uri.fsPath);
-
-            const rgdParentLoader: RgdParentLoader = async (refPath: string): Promise<RgdTable | null> => {
-                if (!attribBase) return null;
-                let cleanPath = refPath.replace(/\\/g, '/');
-                if (cleanPath.endsWith('.lua')) cleanPath = cleanPath.slice(0, -4);
-                const rgdPath = path.join(attribBase, cleanPath + '.rgd');
-                if (fs.existsSync(rgdPath)) {
-                    const parentRgd = parseRgd(Buffer.from(fs.readFileSync(rgdPath)), dict);
-                    return parentRgd.gameData;
-                }
-                const luaPath = path.join(attribBase, cleanPath + '.lua');
-                if (fs.existsSync(luaPath)) {
-                    const parentLuaCode = fs.readFileSync(luaPath, 'utf8');
-                    const { gameData } = await luaToRgdResolved(parentLuaCode, dict, rgdParentLoader);
-                    return gameData;
-                }
-                return null;
-            };
-
+            const attribBase = findAttribBase(uri.fsPath);
+            const rgdParentLoader = makeRgdParentLoader(attribBase, dict);
             const { gameData, version } = await luaToRgdResolved(luaCode, dict, rgdParentLoader);
             const outputPath = uri.fsPath.replace(/\.lua$/i, '.rgd');
 
@@ -299,33 +241,12 @@ export class RgdCommands {
 
         const folderPath = folders[0].fsPath;
         const dict = this.getDictionary();
-        const attribBase = this.findAttribBase(folderPath);
+        const attribBase = findAttribBase(folderPath);
+        const fileCache = new Map<string, string | null>();
+        const parentLoader = makeLuaParentLoader(attribBase, dict, fileCache);
 
-        const rgdFiles = fs.readdirSync(folderPath)
-            .filter(f => f.toLowerCase().endsWith('.rgd'))
-            .map(f => path.join(folderPath, f));
-
+        const rgdFiles = collectFiles(folderPath, '.rgd');
         if (rgdFiles.length === 0) { vscode.window.showWarningMessage('No RGD files found in folder'); return; }
-
-        const luaFileLoader: LuaFileLoader = (refPath: string): string | null => {
-            if (!attribBase) return null;
-            let cleanPath = refPath.replace(/\\/g, '/');
-            if (cleanPath.endsWith('.lua')) cleanPath = cleanPath.slice(0, -4);
-            const luaPath = path.join(attribBase, cleanPath + '.lua');
-            if (fs.existsSync(luaPath)) return fs.readFileSync(luaPath, 'utf8');
-            const rgdPath = path.join(attribBase, cleanPath + '.rgd');
-            if (fs.existsSync(rgdPath)) {
-                const parentRgd = parseRgd(Buffer.from(fs.readFileSync(rgdPath)), dict);
-                return rgdToLua(parentRgd);
-            }
-            return null;
-        };
-
-        const parentLoader: ParentLoader = async (refPath: string) => {
-            const luaCode = luaFileLoader(refPath);
-            if (!luaCode) return null;
-            return parseLuaToTable(luaCode, luaFileLoader);
-        };
 
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -334,22 +255,36 @@ export class RgdCommands {
         }, async (progress, token) => {
             let converted = 0;
             let errors = 0;
+            const created: string[] = [];
             for (let i = 0; i < rgdFiles.length; i++) {
                 if (token.isCancellationRequested) break;
                 const rgdFile = rgdFiles[i];
                 progress.report({ message: `${path.basename(rgdFile)} (${i + 1}/${rgdFiles.length})`, increment: 100 / rgdFiles.length });
                 try {
-                    const buffer = fs.readFileSync(rgdFile);
-                    const rgd = parseRgd(Buffer.from(buffer), dict);
+                    const rgd = parseRgd(fs.readFileSync(rgdFile), dict);
                     const luaCode = await rgdToLuaDifferential(rgd, parentLoader);
-                    fs.writeFileSync(rgdFile.replace(/\.rgd$/i, '.lua'), luaCode, 'utf8');
+                    const outPath = rgdFile.replace(/\.rgd$/i, '.lua');
+                    fs.writeFileSync(outPath, luaCode, 'utf8');
+                    created.push(outPath);
                     converted++;
                 } catch (e: any) {
                     console.error(`Failed to convert ${rgdFile}: ${e.message}`);
                     errors++;
                 }
+                if (i % 10 === 0) await new Promise<void>(r => setImmediate(r));
             }
             vscode.window.showInformationMessage(`Converted ${converted} files${errors > 0 ? `, ${errors} errors` : ''}`);
+            if (created.length > 0) {
+                const choice = await vscode.window.showQuickPick(
+                    ['Keep generated files', 'Delete generated files (test cleanup)'],
+                    { placeHolder: `${created.length} .lua files created — keep or delete?` }
+                );
+                if (choice?.startsWith('Delete')) {
+                    let deleted = 0;
+                    for (const f of created) { try { fs.unlinkSync(f); deleted++; } catch { } }
+                    vscode.window.showInformationMessage(`Deleted ${deleted} generated Lua files`);
+                }
+            }
         });
     }
 
@@ -361,31 +296,11 @@ export class RgdCommands {
 
         const folderPath = folders[0].fsPath;
         const dict = this.getDictionary();
-        const attribBase = this.findAttribBase(folderPath);
+        const attribBase = findAttribBase(folderPath);
+        const rgdParentLoader = makeRgdParentLoader(attribBase, dict);
 
-        const luaFiles = fs.readdirSync(folderPath)
-            .filter(f => f.toLowerCase().endsWith('.lua'))
-            .map(f => path.join(folderPath, f));
-
+        const luaFiles = collectFiles(folderPath, '.lua');
         if (luaFiles.length === 0) { vscode.window.showWarningMessage('No Lua files found in folder'); return; }
-
-        const rgdParentLoader: RgdParentLoader = async (refPath: string): Promise<RgdTable | null> => {
-            if (!attribBase) return null;
-            let cleanPath = refPath.replace(/\\/g, '/');
-            if (cleanPath.endsWith('.lua')) cleanPath = cleanPath.slice(0, -4);
-            const rgdPath = path.join(attribBase, cleanPath + '.rgd');
-            if (fs.existsSync(rgdPath)) {
-                const parentRgd = parseRgd(Buffer.from(fs.readFileSync(rgdPath)), dict);
-                return parentRgd.gameData;
-            }
-            const luaPath = path.join(attribBase, cleanPath + '.lua');
-            if (fs.existsSync(luaPath)) {
-                const parentLuaCode = fs.readFileSync(luaPath, 'utf8');
-                const { gameData } = await luaToRgdResolved(parentLuaCode, dict, rgdParentLoader);
-                return gameData;
-            }
-            return null;
-        };
 
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -394,6 +309,7 @@ export class RgdCommands {
         }, async (progress, token) => {
             let compiled = 0;
             let errors = 0;
+            const created: string[] = [];
             for (let i = 0; i < luaFiles.length; i++) {
                 if (token.isCancellationRequested) break;
                 const luaFile = luaFiles[i];
@@ -401,14 +317,28 @@ export class RgdCommands {
                 try {
                     const luaCode = fs.readFileSync(luaFile, 'utf8');
                     const { gameData, version } = await luaToRgdResolved(luaCode, dict, rgdParentLoader);
-                    writeRgdFile(luaFile.replace(/\.lua$/i, '.rgd'), gameData, dict, version);
+                    const outPath = luaFile.replace(/\.lua$/i, '.rgd');
+                    writeRgdFile(outPath, gameData, dict, version);
+                    created.push(outPath);
                     compiled++;
                 } catch (e: any) {
                     console.error(`Failed to compile ${luaFile}: ${e.message}`);
                     errors++;
                 }
+                if (i % 10 === 0) await new Promise<void>(r => setImmediate(r));
             }
             vscode.window.showInformationMessage(`Compiled ${compiled} files${errors > 0 ? `, ${errors} errors` : ''}`);
+            if (created.length > 0) {
+                const choice = await vscode.window.showQuickPick(
+                    ['Keep generated files', 'Delete generated files (test cleanup)'],
+                    { placeHolder: `${created.length} .rgd files created — keep or delete?` }
+                );
+                if (choice?.startsWith('Delete')) {
+                    let deleted = 0;
+                    for (const f of created) { try { fs.unlinkSync(f); deleted++; } catch { } }
+                    vscode.window.showInformationMessage(`Deleted ${deleted} generated RGD files`);
+                }
+            }
         });
     }
 }

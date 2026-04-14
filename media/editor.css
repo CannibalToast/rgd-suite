@@ -166,6 +166,7 @@ body {
 
 .tree-children {
     display: none;
+    overflow: hidden;
 }
 
 .tree-children.expanded {
@@ -375,11 +376,6 @@ body {
     background: var(--vscode-scrollbarSlider-activeBackground);
 }
 
-/* Animation for expand/collapse */
-.tree-children {
-    overflow: hidden;
-    transition: max-height 0.2s ease-out;
-}
 
 /* Search highlight */
 .highlight {
@@ -449,10 +445,6 @@ body {
     width: 16px;
     text-align: center;
     margin-right: 4px;
-}
-
-.collapsible-content {
-    transition: max-height 0.2s ease-out;
 }
 
 .collapsible-content.collapsed {

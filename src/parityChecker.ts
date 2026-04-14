@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { parseRgd } from '../bundled/rgd-tools/dist/reader';
-import { parseLuaToTable, LuaFileLoader, ParsedLuaTable } from '../bundled/rgd-tools/dist/luaFormat';
+import { parseLuaToTable, ParsedLuaTable } from '../bundled/rgd-tools/dist/luaFormat';
+import { findAttribBase, makeLuaFileLoader } from './attribUtils';
 import { RgdTable, RgdDataType, HashDictionary } from '../bundled/rgd-tools/dist/types';
 import { DictionaryManager } from './dictionaryManager';
+import { ParityWorkerPool } from './workerPool';
 
 const FLOAT_EPSILON = 1e-4;
 
@@ -102,36 +105,6 @@ function valuesMatch(a: FlatEntry, b: FlatEntry): boolean {
     return a.value === b.value;
 }
 
-function findAttribBase(filePath: string): string | null {
-    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-    const idx = normalized.lastIndexOf('/attrib/');
-    if (idx !== -1) return filePath.substring(0, idx + 7);
-    let dir = path.dirname(filePath);
-    for (let d = 0; d < 15; d++) {
-        const attrib = path.join(dir, 'attrib');
-        const dataAttrib = path.join(dir, 'data', 'attrib');
-        if (fs.existsSync(dataAttrib)) return dataAttrib;
-        if (fs.existsSync(attrib)) return attrib;
-        const parent = path.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-    }
-    return null;
-}
-
-function makeLuaLoader(attribBase: string | null, fileCache: Map<string, string | null>): LuaFileLoader {
-    return (refPath: string): string | null => {
-        if (!attribBase) return null;
-        let clean = refPath.replace(/\\/g, '/');
-        if (!clean.endsWith('.lua')) clean += '.lua';
-        const full = path.join(attribBase, clean);
-        if (fileCache.has(full)) return fileCache.get(full)!;
-        const content = fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null;
-        fileCache.set(full, content);
-        return content;
-    };
-}
-
 function collectMissingRefs(luaTable: ParsedLuaTable, attribBase: string | null, prefix = ''): ParityIssue[] {
     const issues: ParityIssue[] = [];
     for (const [key, entry] of luaTable.entries) {
@@ -159,7 +132,7 @@ export function checkParity(
     fileCache: Map<string, string | null> = new Map()
 ): ParityResult {
     const attribBase = findAttribBase(rgdPath) ?? findAttribBase(luaPath);
-    const luaLoader = makeLuaLoader(attribBase, fileCache);
+    const luaLoader = makeLuaFileLoader(attribBase, dict, fileCache);
     const issues: ParityIssue[] = [];
 
     const rgdBuf = fs.readFileSync(rgdPath);
@@ -319,44 +292,105 @@ export function registerParityCommands(context: vscode.ExtensionContext) {
         const pairs = findRgdLuaPairs(folder);
         if (pairs.length === 0) { vscode.window.showInformationMessage('No .rgd files found in folder'); return; }
 
+        // Worker pool setup
+        const workerScript  = path.join(context.extensionPath, 'workers', 'parity-worker.js');
+        const distPath      = path.join(context.extensionPath, 'bundled', 'rgd-tools', 'dist');
+        const cfg           = vscode.workspace.getConfiguration('rgdEditor');
+        const userDicts     = (cfg.get<string[]>('dictionaryPaths') || []).filter(p => fs.existsSync(p));
+        const bundledDict   = path.join(context.extensionPath, 'dictionaries', 'RGD_DIC.TXT');
+        const allDictPaths  = fs.existsSync(bundledDict) ? [bundledDict, ...userDicts] : userDicts;
+        const canUseWorkers  = fs.existsSync(workerScript);
+        const configuredCount = vscode.workspace.getConfiguration('rgdSuite').get<number>('parityWorkers', 0);
+        const autoCount       = Math.max(1, os.cpus().length - 1);
+        const workerCount     = canUseWorkers ? (configuredCount > 0 ? configuredCount : autoCount) : 0;
+
+        // Pre-partition before workers spin up — one header line for skips, not N appendLine calls
+        const checkable = pairs.filter(p => p.lua !== null);
+        const noLua     = pairs.length - checkable.length;
+
         out.appendLine(`\n${'═'.repeat(60)}`);
         out.appendLine(`Batch Parity Check: ${path.basename(folder)}  [${new Date().toLocaleTimeString()}]`);
-        out.appendLine(`Found ${pairs.length} RGD files | Folder: ${folder}`);
+        out.appendLine(`Found ${pairs.length} RGD | ${checkable.length.toLocaleString()} to check | ${workerCount > 0 ? workerCount + ' workers' : 'sequential'} | ${folder}`);
+        if (noLua > 0) out.appendLine(`[SKIP ] ${noLua.toLocaleString()} file(s) have no matching .lua — excluded`);
         out.appendLine('═'.repeat(60));
 
-        let passed = 0, failed = 0, errored = 0, noLua = 0;
+        const batchStartTime = Date.now();
+        let passed = 0, failed = 0, errored = 0;
         const failedFiles: string[] = [];
-        const fileCache = new Map<string, string | null>();
 
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: 'RGD Batch Parity Check',
+            title: `RGD Batch Parity Check${workerCount > 0 ? ` (${workerCount} workers)` : ''}`,
             cancellable: true
         }, async (progress, token) => {
-            for (let i = 0; i < pairs.length; i++) {
-                if (token.isCancellationRequested) { out.appendLine('⚠ Cancelled by user'); break; }
-                const { rgd, lua } = pairs[i];
-                progress.report({ message: `${path.basename(rgd)} (${i + 1}/${pairs.length})`, increment: 100 / pairs.length });
+            let pool: ParityWorkerPool | null = null;
+            let logTimer: ReturnType<typeof setInterval> | null = null;
+            let completed = 0;
+            let lastProgressMs = Date.now();
 
-                if (!lua) {
-                    out.appendLine(`[SKIP ] ${path.relative(folder!, rgd)} — no .lua counterpart`);
-                    noLua++;
-                    continue;
+            const onResult = (result: ParityResult, rgd: string) => {
+                completed++;
+                if (result.issues.length === 0) {
+                    passed++;
+                } else {
+                    failed++;
+                    failedFiles.push(path.relative(folder!, rgd));
+                    out.appendLine(formatResult(result, folder!));
+                }
+                const now = Date.now();
+                if (completed % 50 === 0 || now - lastProgressMs > 500) {
+                    progress.report({ message: `${completed.toLocaleString()}/${checkable.length.toLocaleString()} — ${passed}✓ ${failed}✗` });
+                    lastProgressMs = now;
+                }
+            };
+
+            try {
+                if (canUseWorkers) {
+                    pool = new ParityWorkerPool(workerCount, workerScript, distPath, allDictPaths);
+                    pool.start();
                 }
 
-                try {
-                    const result = checkParity(rgd, lua, dict, fileCache);
-                    out.appendLine(formatResult(result, folder));
-                    result.issues.length === 0 ? passed++ : (failed++, failedFiles.push(path.relative(folder!, rgd)));
-                } catch (e: any) {
-                    out.appendLine(`[ERROR] ${path.relative(folder!, rgd)}: ${e.message}`);
-                    errored++;
+                // Realtime throughput log — one line per second to the output channel
+                logTimer = setInterval(() => {
+                    if (completed === 0) return;
+                    const secs = (Date.now() - batchStartTime) / 1000;
+                    const rate = secs > 0 ? Math.round(completed / secs) : 0;
+                    out.appendLine(`  → [${completed.toLocaleString()}/${checkable.length.toLocaleString()}] ${passed.toLocaleString()}✓ ${failed}✗ ${errored}! | ${rate.toLocaleString()} files/sec`);
+                }, 1000);
+
+                if (pool) {
+                    // ── Parallel path ──────────────────────────────────────
+                    token.onCancellationRequested(() => { pool!.cancel(); out.appendLine('⚠ Cancelled by user'); });
+                    const tasks = checkable.map(({ rgd, lua }) =>
+                        pool!.check(rgd, lua!)
+                            .then(result => onResult(result, rgd))
+                            .catch((e: any) => { out.appendLine(`[ERROR] ${path.relative(folder!, rgd)}: ${e.message}`); errored++; })
+                    );
+                    await Promise.allSettled(tasks);
+                } else {
+                    // ── Sequential fallback ────────────────────────────────
+                    const fileCache = new Map<string, string | null>();
+                    for (let i = 0; i < checkable.length; i++) {
+                        if (token.isCancellationRequested) { out.appendLine('⚠ Cancelled by user'); break; }
+                        const { rgd, lua } = checkable[i];
+                        try {
+                            onResult(checkParity(rgd, lua!, dict, fileCache), rgd);
+                        } catch (e: any) {
+                            out.appendLine(`[ERROR] ${path.relative(folder!, rgd)}: ${e.message}`);
+                            errored++;
+                        }
+                        if (i % 10 === 0) await new Promise<void>(r => setImmediate(r));
+                    }
                 }
+            } finally {
+                if (logTimer) clearInterval(logTimer);
+                pool?.dispose();
             }
         });
 
+        const elapsedSec = ((Date.now() - batchStartTime) / 1000).toFixed(1);
         out.appendLine(`\n${'═'.repeat(60)}`);
-        out.appendLine(`Summary: ${pairs.length} total | ${passed} pass | ${failed} fail | ${errored} error | ${noLua} skipped (no Lua)`);
+        out.appendLine(`Summary: ${pairs.length.toLocaleString()} total | ${passed.toLocaleString()} pass | ${failed} fail | ${errored} error | ${noLua} skipped | ${elapsedSec}s`);
         if (failedFiles.length) {
             out.appendLine('\nFailed files:');
             failedFiles.forEach(f => out.appendLine(`  ✗ ${f}`));

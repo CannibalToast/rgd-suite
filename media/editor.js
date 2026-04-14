@@ -2,7 +2,9 @@
     const vscode = acquireVsCodeApi();
     let rgdData = null;
     let selectedNode = null;
+    let selectedRow = null;
     let isDirty = false;
+    const nodeRegistry = new Map();
 
     function init() {
         vscode.postMessage({ type: 'ready' });
@@ -22,6 +24,57 @@
                 vscode.postMessage({ type: 'save' });
             }
         });
+
+        // Expand All
+        const expandAllBtn = document.getElementById('expand-all');
+        if (expandAllBtn) {
+            expandAllBtn.addEventListener('click', function () {
+                if (!rgdData) return;
+                const treeContent = document.getElementById('tree-content');
+                Array.from(treeContent.children).forEach(function (nodeEl, idx) {
+                    expandNodeDeep(nodeEl, rgdData[idx], [idx], 0);
+                });
+            });
+        }
+
+        // Collapse All
+        const collapseAllBtn = document.getElementById('collapse-all');
+        if (collapseAllBtn) {
+            collapseAllBtn.addEventListener('click', function () {
+                document.querySelectorAll('.tree-children').forEach(function (el) {
+                    el.classList.remove('expanded');
+                });
+                document.querySelectorAll('.tree-toggle.expanded').forEach(function (t) {
+                    t.classList.remove('expanded');
+                    t.classList.add('collapsed');
+                });
+            });
+        }
+
+        // Resizer drag
+        const resizerEl = document.getElementById('resizer');
+        const treePanel = document.querySelector('.tree-panel');
+        if (resizerEl && treePanel) {
+            let rStartX = 0;
+            let rStartW = 280;
+            function onResizerMove(e) {
+                const newW = Math.max(120, Math.min(rStartW + (e.clientX - rStartX), window.innerWidth - 200));
+                treePanel.style.width = newW + 'px';
+            }
+            function onResizerUp() {
+                resizerEl.classList.remove('active');
+                document.removeEventListener('mousemove', onResizerMove);
+                document.removeEventListener('mouseup', onResizerUp);
+            }
+            resizerEl.addEventListener('mousedown', function (e) {
+                rStartX = e.clientX;
+                rStartW = treePanel.offsetWidth;
+                resizerEl.classList.add('active');
+                document.addEventListener('mousemove', onResizerMove);
+                document.addEventListener('mouseup', onResizerUp);
+                e.preventDefault();
+            });
+        }
     }
 
     window.addEventListener('message', function (e) {
@@ -30,8 +83,6 @@
             rgdData = msg.data;
             renderTree(rgdData);
             updateStatus('Loaded ' + (rgdData ? rgdData.length : 0) + ' nodes');
-        } else if (msg.type === 'hashResolved') {
-            showHashResult(msg.hash, msg.name);
         } else if (msg.type === 'saved') {
             isDirty = false;
             updateStatus('Saved');
@@ -39,6 +90,8 @@
     });
 
     function renderTree(nodes) {
+        nodeRegistry.clear();
+        selectedRow = null;
         const treeContent = document.getElementById('tree-content');
         if (!treeContent) return;
         treeContent.innerHTML = '';
@@ -70,6 +123,7 @@
         row.className = 'tree-row';
         row.style.paddingLeft = (8 + depth * 16) + 'px';
         row.dataset.path = JSON.stringify(path);
+        nodeRegistry.set(row.dataset.path, row);
 
         const toggle = document.createElement('span');
         toggle.className = 'tree-toggle ' + (hasChildren ? 'collapsed' : 'leaf');
@@ -155,14 +209,9 @@
     }
 
     function selectNode(node, path) {
-        document.querySelectorAll('.tree-row.selected').forEach(function (el) {
-            el.classList.remove('selected');
-        });
-
-        const pathStr = JSON.stringify(path);
-        const row = document.querySelector('.tree-row[data-path="' + pathStr.replace(/"/g, '\\"') + '"]');
-        if (row) row.classList.add('selected');
-
+        if (selectedRow) selectedRow.classList.remove('selected');
+        const row = nodeRegistry.get(JSON.stringify(path));
+        if (row) { row.classList.add('selected'); selectedRow = row; }
         selectedNode = { node: node, path: path };
         renderPropertyGrid(node);
     }
@@ -344,57 +393,35 @@
         if (status) status.textContent = 'Modified (unsaved)';
     }
 
-    function propertyRow(name, value, type, locale, ref) {
-        let val = value !== undefined && value !== null ? value : '';
-        let input = '';
-
-        // Check if this is a $REF property - make its value a clickable hyperlink
-        const isRefProperty = name === '$REF' || name === 'ref' || name === 'reference';
-
-        if (type === 'boolean') {
-            input = '<input type="checkbox" class="property-input boolean" ' + (val ? 'checked' : '') + ' disabled>';
-        } else if (type === 'number') {
-            input = '<input type="number" class="property-input" value="' + val + '" readonly>';
-        } else if (ref || isRefProperty) {
-            // Show ref as a clickable hyperlink
-            const refPath = ref || val;
-            input = '<a href="#" class="ref-link" data-ref="' + esc(refPath) + '" title="Click to open: ' + esc(refPath) + '">' + esc(refPath) + '</a>';
-        } else {
-            input = '<input type="text" class="property-input" value="' + esc(String(val)) + '" readonly>';
+    function expandNodeDeep(nodeEl, nodeData, nodePath, depth) {
+        if (!nodeData || !nodeData.children || nodeData.children.length === 0) return;
+        const childrenDiv = nodeEl.querySelector(':scope > .tree-children');
+        if (!childrenDiv) return;
+        const toggle = nodeEl.querySelector(':scope > .tree-row > .tree-toggle');
+        if (childrenDiv.children.length === 0) {
+            nodeData.children.forEach(function (child, idx) {
+                childrenDiv.appendChild(createTreeNode(child, nodePath.concat([idx]), depth + 1));
+            });
         }
-
-        let localeHtml = locale ? '<div style="font-size:11px;color:var(--vscode-descriptionForeground);margin-top:2px;">' + esc(locale) + '</div>' : '';
-
-        return '<tr class="property-row"><td class="property-name">' + esc(name) + ' <span class="type-badge">' + type + '</span></td><td class="property-value">' + input + localeHtml + '</td></tr>';
-    }
-
-    function typeOf(val) {
-        if (typeof val === 'boolean') return 'boolean';
-        if (typeof val === 'number') return 'number';
-        if (typeof val === 'string') return 'string';
-        return 'unknown';
+        childrenDiv.classList.add('expanded');
+        if (toggle) { toggle.classList.remove('collapsed'); toggle.classList.add('expanded'); }
+        Array.from(childrenDiv.children).forEach(function (childEl, idx) {
+            expandNodeDeep(childEl, nodeData.children[idx], nodePath.concat([idx]), depth + 1);
+        });
     }
 
     function esc(text) {
         if (text === null || text === undefined) return '';
-        const d = document.createElement('div');
-        d.textContent = String(text);
-        return d.innerHTML;
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
     }
 
     function updateStatus(text) {
         const s = document.getElementById('status-text');
         if (s) s.textContent = text;
-    }
-
-    function showHashResult(hash, name) {
-        const r = document.getElementById('hash-result');
-        if (!r) return;
-        if (name && name !== hash) {
-            r.innerHTML = '<div style="color:var(--vscode-charts-green);">✓ ' + esc(hash) + ' → ' + esc(name) + '</div>';
-        } else {
-            r.innerHTML = '<div style="color:var(--vscode-errorForeground);">✗ Not found: ' + esc(hash) + '</div>';
-        }
     }
 
     if (document.readyState === 'loading') {

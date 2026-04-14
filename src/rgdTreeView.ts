@@ -63,6 +63,8 @@ export class RgdTreeProvider implements vscode.TreeDataProvider<RgdTreeItem> {
     private dict: HashDictionary | null = null;
     private sourceUri: vscode.Uri | null = null;
     private rgdData: any = null;
+    private readonly _PARSE_CACHE_MAX = 30;
+    private _parseCache = new Map<string, { mtime: number; rgdData: any; nodes: RgdNode[]; attribRoot: string | undefined }>();
 
     constructor(private readonly context: vscode.ExtensionContext) { }
 
@@ -89,6 +91,15 @@ export class RgdTreeProvider implements vscode.TreeDataProvider<RgdTreeItem> {
 
     async loadFromUri(uri: vscode.Uri) {
         try {
+            const mtime = fs.statSync(uri.fsPath).mtimeMs;
+            const hit = this._parseCache.get(uri.fsPath);
+            if (hit && hit.mtime === mtime) {
+                this.rgdData = hit.rgdData;
+                this.nodes = hit.nodes;
+                this.sourceUri = uri;
+                this._onDidChangeTreeData.fire();
+                return;
+            }
             const buffer = fs.readFileSync(uri.fsPath);
             const dict = DictionaryManager.getInstance().getDictionary(this.context);
             this.dict = dict;
@@ -133,6 +144,10 @@ export class RgdTreeProvider implements vscode.TreeDataProvider<RgdTreeItem> {
 
             const localeMap = LocaleManager.getInstance().getLocaleMap(uri.fsPath);
             this.nodes = rgdToTree(rgd.gameData, attribRoot, localeMap);
+            if (this._parseCache.size >= this._PARSE_CACHE_MAX) {
+                this._parseCache.delete(this._parseCache.keys().next().value!);
+            }
+            this._parseCache.set(uri.fsPath, { mtime, rgdData: rgd, nodes: this.nodes, attribRoot });
             this.sourceUri = uri;
             this._onDidChangeTreeData.fire();
         } catch (err: any) {

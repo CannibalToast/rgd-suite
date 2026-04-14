@@ -6,6 +6,7 @@ import { rgdToTree, treeToRgd, RgdNode } from './rgdTable';
 import { writeRgdFile } from '../bundled/rgd-tools/dist/writer';
 import { DictionaryManager } from './dictionaryManager';
 import { LocaleManager } from './localeManager';
+import { findAttribBase } from './attribUtils';
 
 interface WebviewMessage {
     type: string;
@@ -56,20 +57,7 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
             const dict = this.dictionaryManager.getDictionary(this.context);
             const rgd = parseRgd(buffer, dict);
 
-            let attribRoot: string | undefined;
-            let currentDir = path.dirname(document.uri.fsPath);
-            let depth = 0;
-            while (currentDir !== path.dirname(currentDir) && depth < 15) {
-                if (fs.existsSync(path.join(currentDir, 'attrib')) || fs.existsSync(path.join(currentDir, 'data', 'attrib'))) {
-                    attribRoot = path.join(currentDir, 'data', 'attrib');
-                    if (!fs.existsSync(attribRoot)) {
-                        attribRoot = path.join(currentDir, 'attrib');
-                    }
-                    break;
-                }
-                currentDir = path.dirname(currentDir);
-                depth++;
-            }
+            const attribRoot = findAttribBase(document.uri.fsPath) ?? undefined;
 
             document.rgdVersion = rgd.header.version;
             const localeMap = LocaleManager.getInstance().getLocaleMap(document.uri.fsPath);
@@ -81,11 +69,6 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
                 switch (message.type) {
                     case 'ready':
                         webviewPanel.webview.postMessage({ type: 'loadData', data: document.nodes });
-                        break;
-
-                    case 'resolveHash':
-                        const name = this.dictionaryManager.hashToName(message.hash);
-                        webviewPanel.webview.postMessage({ type: 'hashResolved', hash: message.hash, name });
                         break;
 
                     case 'openRef':

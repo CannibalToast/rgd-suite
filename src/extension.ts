@@ -11,7 +11,7 @@ import { registerCliCommands } from './cliCommands';
 import { registerParityCommands } from './parityChecker';
 
 export function activate(context: vscode.ExtensionContext) {
-    console.log('RGD Suite v1.1.0 is now active');
+    console.log('RGD Suite v1.1.1 is now active');
 
     // Initialize dictionary early — shared by all sub-systems
     DictionaryManager.getInstance().getDictionary(context);

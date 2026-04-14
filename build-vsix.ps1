@@ -28,7 +28,7 @@ $include = @(
 )
 
 # Folders to include recursively
-$includeDirs = @("media", "syntaxes", "dictionaries")
+$includeDirs = @("media", "syntaxes", "dictionaries", "workers")
 
 foreach ($f in $include) {
     $src = Join-Path $Root $f
@@ -53,7 +53,6 @@ $name      = $pkg.name
 $version   = $pkg.version
 $displayName = $pkg.displayName
 $description = $pkg.description
-$license   = if ($pkg.license) { $pkg.license } else { "MIT" }
 
 # --- Write [Content_Types].xml ---
 $contentTypes = @'

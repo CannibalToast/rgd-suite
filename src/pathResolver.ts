@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+const _DFS_CACHE_MAX = 2000;
+const _dfsCache = new Map<string, string | undefined>();
+
 export interface ResolvedPathInfo {
   path: string;
   exists: boolean;
@@ -35,6 +38,9 @@ export function tryResolveValuePath(value: unknown, attribRoot: string): Resolve
 }
 
 function findInAttribRoot(rel: string, attribRoot: string): string | undefined {
+  const cacheKey = attribRoot + '\0' + rel;
+  if (_dfsCache.has(cacheKey)) return _dfsCache.get(cacheKey);
+  if (_dfsCache.size >= _DFS_CACHE_MAX) _dfsCache.delete(_dfsCache.keys().next().value!);
   const targetTail = rel.replace(/\\/g, '/');
   const parts = targetTail.split('/');
   const tailName = parts[parts.length - 1];
@@ -55,13 +61,18 @@ function findInAttribRoot(rel: string, attribRoot: string): string | undefined {
         if (entry.name === tailName) {
           if (parts.length > 1) {
             const relFromRoot = full.substring(attribRoot.length + 1).replace(/\\/g, '/');
-            if (relFromRoot.endsWith(targetTail)) return full;
+            if (relFromRoot.endsWith(targetTail)) {
+              _dfsCache.set(cacheKey, full);
+              return full;
+            }
           } else {
+            _dfsCache.set(cacheKey, full);
             return full;
           }
         }
       }
     }
   }
+  _dfsCache.set(cacheKey, undefined);
   return undefined;
 }

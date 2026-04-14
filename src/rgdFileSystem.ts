@@ -12,7 +12,8 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
     private _emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
     readonly onDidChangeFile: vscode.Event<vscode.FileChangeEvent[]> = this._emitter.event;
 
-    private fileCache = new Map<string, { version: number; mtime: number }>();
+    private readonly FILE_CACHE_MAX = 50;
+    private fileCache = new Map<string, { version: number; mtime: number; text: string }>();
 
     constructor(private readonly context: vscode.ExtensionContext) {
         console.log('[RGD FS] Initialized');
@@ -58,15 +59,20 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
     readFile(uri: vscode.Uri): Uint8Array {
         const realPath = this.toRealPath(uri);
         try {
+            const currentMtime = fs.statSync(realPath).mtimeMs;
+            const cached = this.fileCache.get(realPath);
+            if (cached && cached.mtime === currentMtime) {
+                return Buffer.from(cached.text, 'utf8');
+            }
             const buffer = fs.readFileSync(realPath);
             const dict = DictionaryManager.getInstance().getDictionary(this.context);
             const rgdFile = parseRgd(buffer, dict);
             const localeMap = LocaleManager.getInstance().getLocaleMap(realPath);
             const text = rgdToText(rgdFile, path.basename(realPath), localeMap);
-            this.fileCache.set(realPath, {
-                version: rgdFile.header.version,
-                mtime: fs.statSync(realPath).mtimeMs
-            });
+            if (this.fileCache.size >= this.FILE_CACHE_MAX) {
+                this.fileCache.delete(this.fileCache.keys().next().value!);
+            }
+            this.fileCache.set(realPath, { version: rgdFile.header.version, mtime: currentMtime, text });
             return Buffer.from(text, 'utf8');
         } catch (error: any) {
             const errorText = `# Error reading RGD file: ${error.message}\n# File may be corrupted or not a valid RGD file.`;
