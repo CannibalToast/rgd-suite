@@ -416,7 +416,10 @@ export class RgdCommands {
                 pool?.dispose();
             }
 
-            const successes = done - errors;
+            // Use `created.length` rather than `done - errors` so cancelled
+            // files (which bump progress but produce no output) aren't
+            // miscounted as successes.
+            const successes = created.length;
             vscode.window.showInformationMessage(
                 `${opts.verbPast} ${successes} files${errors > 0 ? `, ${errors} errors` : ''}`
             );
