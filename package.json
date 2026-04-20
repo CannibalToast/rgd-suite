@@ -17,10 +17,21 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "*",
     "onFileSystem:rgd",
     "workspaceContains:**/*.rgd",
     "onCommand:rgdEditor.openRgd",
+    "onCommand:rgdEditor.openRgdText",
+    "onCommand:rgdEditor.convertToText",
+    "onCommand:rgdEditor.convertToBinary",
+    "onCommand:rgdEditor.showInfo",
+    "onCommand:rgdEditor.extractFromSga",
+    "onCommand:rgdEditor.dumpToLua",
+    "onCommand:rgdEditor.compileToRgd",
+    "onCommand:rgdEditor.batchToLua",
+    "onCommand:rgdEditor.batchToRgd",
+    "onCommand:rgdEditor.selectLocaleFolder",
+    "onCommand:rgdEditor.refreshTree",
+    "onCommand:rgdEditor.loadTreeView",
     "onLanguage:rgd-text",
     "onCommand:rgd.fromLua",
     "onCommand:rgd.toLua",
@@ -263,11 +274,6 @@
           "enum": [1, 3],
           "description": "Default RGD version when creating new files"
         },
-        "rgdEditor.createTextSidecarOnOpen": {
-          "type": "boolean",
-          "default": true,
-          "description": "When opening a .rgd file, also emit a .rgd.txt sidecar for direct text editing"
-        },
         "rgdEditor.preferredLanguage": {
           "type": "string",
           "default": "Chinese",
@@ -296,14 +302,20 @@
           "default": 0,
           "minimum": 0,
           "description": "Worker threads used by Batch Parity Check. 0 = auto (logical CPU count − 1, minimum 1). Raise for faster throughput on many-core machines; lower if VS Code becomes unresponsive during large batches."
+        },
+        "rgdSuite.batchWorkers": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "description": "Worker threads used by Batch Convert Folder to Lua/RGD. 0 = auto (logical CPU count − 1, minimum 1). Raise for faster throughput on many-core machines; lower if VS Code becomes unresponsive during large batches."
         }
       }
     }
   },
   "scripts": {
-    "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --resolve-extensions=.ts,.js --tsconfig=tsconfig.json",
-    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --resolve-extensions=.ts,.js --tsconfig=tsconfig.json --watch",
-    "package": "vsce package --no-dependencies --allow-star-activation && node -e \"const {execSync,version}=require('child_process'),p=require('./package.json');const src='rgd-suite-'+p.version+'.vsix';require('fs').copyFileSync(src,'rgd-suite-latest.vsix');console.log('Copied '+src+' -> rgd-suite-latest.vsix')\"",
+    "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node16 --minify --legal-comments=none --resolve-extensions=.ts,.js --tsconfig=tsconfig.json",
+    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node16 --sourcemap --resolve-extensions=.ts,.js --tsconfig=tsconfig.json --watch",
+    "package": "vsce package --no-dependencies && node -e \"const {execSync,version}=require('child_process'),p=require('./package.json');const src='rgd-suite-'+p.version+'.vsix';require('fs').copyFileSync(src,'rgd-suite-latest.vsix');console.log('Copied '+src+' -> rgd-suite-latest.vsix')\"",
     "build-all": "npm run build && npm run package",
     "vscode:prepublish": "npm run build"
   },

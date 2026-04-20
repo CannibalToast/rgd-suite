@@ -32,8 +32,10 @@ export interface ParityResult {
 
 // ---------- Flatten RGD table ----------
 
-function flattenRgd(table: RgdTable, dict: HashDictionary, prefix = ''): FlatMap {
-    const result: FlatMap = new Map();
+function flattenRgd(table: RgdTable, dict: HashDictionary, prefix = '', result?: FlatMap): FlatMap {
+    // Pass the target Map by reference so nested tables append directly
+    // instead of allocating-and-copying per level (Tier 3 #18).
+    const out = result ?? new Map<string, FlatEntry>();
     for (const entry of table.entries) {
         const k = entry.name ?? `#${entry.hash.toString(16).padStart(8, '0')}`;
         const full = prefix ? `${prefix}.${k}` : k;
@@ -42,50 +44,50 @@ function flattenRgd(table: RgdTable, dict: HashDictionary, prefix = ''): FlatMap
             case RgdDataType.TableInt: {
                 const sub = entry.value as RgdTable;
                 if (!sub) break;
-                for (const [sk, sv] of flattenRgd(sub, dict, full)) result.set(sk, sv);
+                flattenRgd(sub, dict, full, out);
                 break;
             }
             case RgdDataType.Float:
-                result.set(full, { type: 'float', value: entry.value as number }); break;
+                out.set(full, { type: 'float', value: entry.value as number }); break;
             case RgdDataType.Integer:
-                result.set(full, { type: 'int', value: entry.value as number }); break;
+                out.set(full, { type: 'int', value: entry.value as number }); break;
             case RgdDataType.Bool:
-                result.set(full, { type: 'bool', value: entry.value as boolean }); break;
+                out.set(full, { type: 'bool', value: entry.value as boolean }); break;
             case RgdDataType.String:
             case RgdDataType.WString:
                 // Skip $REF entries — these are reference-path metadata, not comparable data values
                 if (k === '$REF') break;
-                result.set(full, { type: 'string', value: entry.value as string }); break;
+                out.set(full, { type: 'string', value: entry.value as string }); break;
             case RgdDataType.NoData:
-                result.set(full, { type: 'nil', value: null }); break;
+                out.set(full, { type: 'nil', value: null }); break;
         }
     }
-    return result;
+    return out;
 }
 
 // ---------- Flatten ParsedLuaTable ----------
 
-function flattenLua(table: ParsedLuaTable, prefix = ''): FlatMap {
-    const result: FlatMap = new Map();
+function flattenLua(table: ParsedLuaTable, prefix = '', result?: FlatMap): FlatMap {
+    const out = result ?? new Map<string, FlatEntry>();
     for (const [key, entry] of table.entries) {
         const full = prefix ? `${prefix}.${key}` : key;
         if (entry.type === 'table' && entry.table) {
-            for (const [sk, sv] of flattenLua(entry.table, full)) result.set(sk, sv);
+            flattenLua(entry.table, full, out);
         } else {
             const val = entry.value;
             if (val === null || val === undefined) {
-                result.set(full, { type: 'nil', value: null });
+                out.set(full, { type: 'nil', value: null });
             } else if (typeof val === 'boolean') {
-                result.set(full, { type: 'bool', value: val });
+                out.set(full, { type: 'bool', value: val });
             } else if (typeof val === 'number') {
                 const isFloat = entry.dataType === RgdDataType.Float || !Number.isInteger(val);
-                result.set(full, { type: isFloat ? 'float' : 'int', value: val });
+                out.set(full, { type: isFloat ? 'float' : 'int', value: val });
             } else if (typeof val === 'string') {
-                result.set(full, { type: 'string', value: val });
+                out.set(full, { type: 'string', value: val });
             }
         }
     }
-    return result;
+    return out;
 }
 
 // ---------- Helpers ----------
@@ -175,21 +177,24 @@ export function checkParity(
 
 const SKIP_SUFFIXES = ['.test.rgd', '.fromtext.rgd'];
 
-function findRgdLuaPairs(folder: string): { rgd: string; lua: string | null }[] {
+async function findRgdLuaPairs(folder: string): Promise<{ rgd: string; lua: string | null }[]> {
     const pairs: { rgd: string; lua: string | null }[] = [];
-    function walk(dir: string) {
+    const stack: string[] = [folder];
+    while (stack.length) {
+        const dir = stack.pop()!;
         let entries: fs.Dirent[];
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+        try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
         for (const e of entries) {
             const full = path.join(dir, e.name);
-            if (e.isDirectory()) { walk(full); continue; }
+            if (e.isDirectory()) { stack.push(full); continue; }
             if (!e.isFile() || !e.name.endsWith('.rgd')) continue;
             if (SKIP_SUFFIXES.some(s => e.name.endsWith(s))) continue;
             const lua = full.replace(/\.rgd$/i, '.lua');
-            pairs.push({ rgd: full, lua: fs.existsSync(lua) ? lua : null });
+            let hasLua = false;
+            try { await fs.promises.access(lua, fs.constants.F_OK); hasLua = true; } catch { /* missing */ }
+            pairs.push({ rgd: full, lua: hasLua ? lua : null });
         }
     }
-    walk(folder);
     return pairs;
 }
 
@@ -289,7 +294,7 @@ export function registerParityCommands(context: vscode.ExtensionContext) {
             folder = sel[0].fsPath;
         }
 
-        const pairs = findRgdLuaPairs(folder);
+        const pairs = await findRgdLuaPairs(folder);
         if (pairs.length === 0) { vscode.window.showInformationMessage('No .rgd files found in folder'); return; }
 
         // Worker pool setup

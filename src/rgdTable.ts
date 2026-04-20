@@ -1,5 +1,6 @@
 import { RgdTable, RgdValue, RgdDataType, RgdEntry, LocaleEntry } from '../bundled/rgd-tools/dist/types';
 import { resolveAttribPath, tryResolveValuePath, ResolvedPathInfo } from './pathResolver';
+import { localeGet } from './localeLoader';
 
 export interface RgdNode {
   key: string;
@@ -51,8 +52,8 @@ export function rgdToTree(
 
     if (typeof node.value === 'string' && /^\$\d+$/.test(node.value)) {
       node.localeId = node.value;
-      if (localeMap && localeMap.has(node.value)) {
-        const entry = localeMap.get(node.value);
+      if (localeMap) {
+        const entry = localeGet(localeMap, node.value);
         if (entry) {
           node.localeText = entry.text;
           node.localeFile = entry.file;

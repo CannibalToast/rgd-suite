@@ -53,7 +53,7 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
         };
 
         try {
-            const buffer = fs.readFileSync(document.uri.fsPath);
+            const buffer = await fs.promises.readFile(document.uri.fsPath);
             const dict = this.dictionaryManager.getDictionary(this.context);
             const rgd = parseRgd(buffer, dict);
 
@@ -74,23 +74,17 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
                     case 'openRef':
                         if (message.ref) {
                             const refPath = message.ref.replace(/\\/g, '/');
-                            const currentDir = path.dirname(document.uri.fsPath);
-                            let targetPath = '';
                             const hasExtension = /\.(lua|rgd|scar|ai)$/i.test(refPath);
                             const extensions = hasExtension ? [''] : ['.rgd', '.lua'];
-                            let searchDir = currentDir;
-                            for (let i = 0; i < 15 && !targetPath; i++) {
-                                const attribPath = path.join(searchDir, 'data', 'attrib');
-                                const altPath = path.join(searchDir, 'attrib');
-                                const basePaths = [attribPath, altPath].filter(p => fs.existsSync(p));
-                                for (const basePath of basePaths) {
-                                    for (const ext of extensions) {
-                                        const testPath = path.join(basePath, refPath + ext);
-                                        if (fs.existsSync(testPath)) { targetPath = testPath; break; }
-                                    }
-                                    if (targetPath) break;
+                            let targetPath = '';
+                            // Prefer the memoized attribRoot detected at open time —
+                            // avoids walking the directory tree on every click.
+                            const base = attribRoot ?? findAttribBase(document.uri.fsPath);
+                            if (base) {
+                                for (const ext of extensions) {
+                                    const testPath = path.join(base, refPath + ext);
+                                    if (fs.existsSync(testPath)) { targetPath = testPath; break; }
                                 }
-                                searchDir = path.dirname(searchDir);
                             }
                             if (targetPath) {
                                 vscode.commands.executeCommand('vscode.open', vscode.Uri.file(targetPath));
@@ -110,7 +104,7 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
                     case 'save':
                         try {
                             await this._saveRgd(document);
-                            const reloadBuffer = fs.readFileSync(document.uri.fsPath);
+                            const reloadBuffer = await fs.promises.readFile(document.uri.fsPath);
                             const reloadDict = this.dictionaryManager.getDictionary(this.context);
                             const reloadRgd = parseRgd(reloadBuffer, reloadDict);
                             const reloadLocaleMap = LocaleManager.getInstance().getLocaleMap(document.uri.fsPath);

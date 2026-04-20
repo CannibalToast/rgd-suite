@@ -1,14 +1,16 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { parseRgd, readRgdFile } from '../bundled/rgd-tools/dist/reader';
 import { rgdToText, textToRgd } from '../bundled/rgd-tools/dist/textFormat';
 import { writeRgdFile } from '../bundled/rgd-tools/dist/writer';
 import { luaToRgdResolved, rgdToLuaDifferential } from '../bundled/rgd-tools/dist/luaFormat';
-import { findAttribBase, makeLuaParentLoader, makeRgdParentLoader, countEntries, collectFiles } from './attribUtils';
+import { findAttribBase, makeLuaParentLoader, makeRgdParentLoader, countEntries, collectFilesAsync } from './attribUtils';
 import { openSgaArchive } from '../bundled/rgd-tools/dist/sga';
 import { DictionaryManager } from './dictionaryManager';
 import { LocaleManager } from './localeManager';
+import { BatchConvertWorkerPool, BatchOp } from './batchConvertPool';
 
 export class RgdCommands {
     constructor(private readonly context: vscode.ExtensionContext) { }
@@ -34,7 +36,7 @@ export class RgdCommands {
             const localeMap = LocaleManager.getInstance().getLocaleMap(uri.fsPath);
             const text = rgdToText(rgdFile, path.basename(uri.fsPath), localeMap);
             const outputPath = uri.fsPath + '.txt';
-            fs.writeFileSync(outputPath, text, 'utf8');
+            await fs.promises.writeFile(outputPath, text, 'utf8');
             const doc = await vscode.workspace.openTextDocument(outputPath);
             await vscode.window.showTextDocument(doc);
             vscode.window.showInformationMessage(`Converted to ${path.basename(outputPath)}`);
@@ -53,7 +55,7 @@ export class RgdCommands {
         if (!uri) { vscode.window.showErrorMessage('No text file selected'); return; }
 
         try {
-            const text = fs.readFileSync(uri.fsPath, 'utf8');
+            const text = await fs.promises.readFile(uri.fsPath, 'utf8');
             const dict = this.getDictionary();
             const { gameData, version } = textToRgd(text, dict);
 
@@ -147,7 +149,7 @@ export class RgdCommands {
                             const rgdFile = readRgdFile(rgdPath, dict);
                             const localeMap = LocaleManager.getInstance().getLocaleMap(rgdPath);
                             const text = rgdToText(rgdFile, path.basename(rgdPath), localeMap);
-                            fs.writeFileSync(rgdPath + '.txt', text, 'utf8');
+                            await fs.promises.writeFile(rgdPath + '.txt', text, 'utf8');
                             converted++;
                             progress.report({ message: `Converted ${converted}/${extracted.length}` });
                         } catch (e) { }
@@ -194,7 +196,7 @@ export class RgdCommands {
             const parentLoader = makeLuaParentLoader(attribBase, dict);
             const luaCode = await rgdToLuaDifferential(rgdFile, parentLoader);
             const outputPath = uri.fsPath.replace(/\.rgd$/i, '.lua');
-            fs.writeFileSync(outputPath, luaCode, 'utf8');
+            await fs.promises.writeFile(outputPath, luaCode, 'utf8');
             const doc = await vscode.workspace.openTextDocument(outputPath);
             await vscode.window.showTextDocument(doc);
             vscode.window.showInformationMessage(`Dumped to ${path.basename(outputPath)}`);
@@ -213,7 +215,7 @@ export class RgdCommands {
         if (!uri) { vscode.window.showErrorMessage('No Lua file selected'); return; }
 
         try {
-            const luaCode = fs.readFileSync(uri.fsPath, 'utf8');
+            const luaCode = await fs.promises.readFile(uri.fsPath, 'utf8');
             const dict = this.getDictionary();
             const attribBase = findAttribBase(uri.fsPath);
             const rgdParentLoader = makeRgdParentLoader(attribBase, dict);
@@ -234,61 +236,42 @@ export class RgdCommands {
     }
 
     async batchToLua(): Promise<void> {
-        const folders = await vscode.window.showOpenDialog({
-            canSelectFiles: false, canSelectFolders: true, canSelectMany: false, openLabel: 'Select Folder'
-        });
-        if (!folders || folders.length === 0) return;
-
-        const folderPath = folders[0].fsPath;
-        const dict = this.getDictionary();
-        const attribBase = findAttribBase(folderPath);
-        const fileCache = new Map<string, string | null>();
-        const parentLoader = makeLuaParentLoader(attribBase, dict, fileCache);
-
-        const rgdFiles = collectFiles(folderPath, '.rgd');
-        if (rgdFiles.length === 0) { vscode.window.showWarningMessage('No RGD files found in folder'); return; }
-
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
+        await this.runBatchConvert({
+            op: 'toLua',
+            inputExt: '.rgd',
+            outputExt: '.lua',
             title: 'Converting RGD files to Lua',
-            cancellable: true
-        }, async (progress, token) => {
-            let converted = 0;
-            let errors = 0;
-            const created: string[] = [];
-            for (let i = 0; i < rgdFiles.length; i++) {
-                if (token.isCancellationRequested) break;
-                const rgdFile = rgdFiles[i];
-                progress.report({ message: `${path.basename(rgdFile)} (${i + 1}/${rgdFiles.length})`, increment: 100 / rgdFiles.length });
-                try {
-                    const rgd = parseRgd(fs.readFileSync(rgdFile), dict);
-                    const luaCode = await rgdToLuaDifferential(rgd, parentLoader);
-                    const outPath = rgdFile.replace(/\.rgd$/i, '.lua');
-                    fs.writeFileSync(outPath, luaCode, 'utf8');
-                    created.push(outPath);
-                    converted++;
-                } catch (e: any) {
-                    console.error(`Failed to convert ${rgdFile}: ${e.message}`);
-                    errors++;
-                }
-                if (i % 10 === 0) await new Promise<void>(r => setImmediate(r));
-            }
-            vscode.window.showInformationMessage(`Converted ${converted} files${errors > 0 ? `, ${errors} errors` : ''}`);
-            if (created.length > 0) {
-                const choice = await vscode.window.showQuickPick(
-                    ['Keep generated files', 'Delete generated files (test cleanup)'],
-                    { placeHolder: `${created.length} .lua files created — keep or delete?` }
-                );
-                if (choice?.startsWith('Delete')) {
-                    let deleted = 0;
-                    for (const f of created) { try { fs.unlinkSync(f); deleted++; } catch { } }
-                    vscode.window.showInformationMessage(`Deleted ${deleted} generated Lua files`);
-                }
-            }
+            verbPast: 'Converted',
+            promptLabel: '.lua files',
         });
     }
 
     async batchToRgd(): Promise<void> {
+        await this.runBatchConvert({
+            op: 'toRgd',
+            inputExt: '.lua',
+            outputExt: '.rgd',
+            title: 'Compiling Lua files to RGD',
+            verbPast: 'Compiled',
+            promptLabel: '.rgd files',
+        });
+    }
+
+    /**
+     * Shared driver for rgd↔lua batch conversion. Uses a worker pool when
+     * available (bundled workers/batch-convert-worker.js) so the extension host
+     * stays responsive; falls back to in-process sequential conversion
+     * otherwise. Behaviourally identical to the old per-direction
+     * implementations.
+     */
+    private async runBatchConvert(opts: {
+        op: BatchOp;
+        inputExt: '.rgd' | '.lua';
+        outputExt: '.rgd' | '.lua';
+        title: string;
+        verbPast: 'Converted' | 'Compiled';
+        promptLabel: string;
+    }): Promise<void> {
         const folders = await vscode.window.showOpenDialog({
             canSelectFiles: false, canSelectFolders: true, canSelectMany: false, openLabel: 'Select Folder'
         });
@@ -297,46 +280,148 @@ export class RgdCommands {
         const folderPath = folders[0].fsPath;
         const dict = this.getDictionary();
         const attribBase = findAttribBase(folderPath);
-        const rgdParentLoader = makeRgdParentLoader(attribBase, dict);
 
-        const luaFiles = collectFiles(folderPath, '.lua');
-        if (luaFiles.length === 0) { vscode.window.showWarningMessage('No Lua files found in folder'); return; }
+        const files = await collectFilesAsync(folderPath, opts.inputExt);
+        if (files.length === 0) {
+            vscode.window.showWarningMessage(`No ${opts.inputExt} files found in folder`);
+            return;
+        }
+
+        // Pool setup — mirror the parity-check pattern so behaviour stays
+        // consistent across batch commands.
+        const extensionPath = this.context.extensionPath;
+        const workerScript = path.join(extensionPath, 'workers', 'batch-convert-worker.js');
+        const distPath = path.join(extensionPath, 'bundled', 'rgd-tools', 'dist');
+        const cfg = vscode.workspace.getConfiguration('rgdEditor');
+        const userDicts = (cfg.get<string[]>('dictionaryPaths') || []).filter(p => fs.existsSync(p));
+        const bundledDict = path.join(extensionPath, 'dictionaries', 'RGD_DIC.TXT');
+        const allDictPaths = fs.existsSync(bundledDict) ? [bundledDict, ...userDicts] : userDicts;
+
+        const canUseWorkers = fs.existsSync(workerScript);
+        const configuredCount = vscode.workspace.getConfiguration('rgdSuite').get<number>('batchWorkers', 0);
+        const autoCount = Math.max(1, os.cpus().length - 1);
+        const workerCount = canUseWorkers ? (configuredCount > 0 ? configuredCount : autoCount) : 0;
+
+        let pool: BatchConvertWorkerPool | null = null;
+        if (workerCount > 0) {
+            pool = new BatchConvertWorkerPool(workerCount, workerScript, distPath, allDictPaths);
+            pool.start();
+        }
 
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: 'Compiling Lua files to RGD',
-            cancellable: true
+            title: `${opts.title}${workerCount > 0 ? ` (${workerCount} workers)` : ''}`,
+            cancellable: true,
         }, async (progress, token) => {
-            let compiled = 0;
+            let done = 0;
             let errors = 0;
             const created: string[] = [];
-            for (let i = 0; i < luaFiles.length; i++) {
-                if (token.isCancellationRequested) break;
-                const luaFile = luaFiles[i];
-                progress.report({ message: `${path.basename(luaFile)} (${i + 1}/${luaFiles.length})`, increment: 100 / luaFiles.length });
-                try {
-                    const luaCode = fs.readFileSync(luaFile, 'utf8');
-                    const { gameData, version } = await luaToRgdResolved(luaCode, dict, rgdParentLoader);
-                    const outPath = luaFile.replace(/\.lua$/i, '.rgd');
-                    writeRgdFile(outPath, gameData, dict, version);
-                    created.push(outPath);
-                    compiled++;
-                } catch (e: any) {
-                    console.error(`Failed to compile ${luaFile}: ${e.message}`);
-                    errors++;
+            const total = files.length;
+            const reportEvery = Math.max(1, Math.floor(total / 200));
+            const bumpProgress = () => {
+                done++;
+                if (done % reportEvery === 0 || done === total) {
+                    progress.report({ message: `${done}/${total}`, increment: (100 * reportEvery) / total });
                 }
-                if (i % 10 === 0) await new Promise<void>(r => setImmediate(r));
+            };
+
+            try {
+                if (pool) {
+                    // Dispatch all in parallel; pool drains per-worker.
+                    const fallbackParentLoader = opts.op === 'toLua'
+                        ? makeLuaParentLoader(attribBase, dict)
+                        : null;
+                    const rgdParentLoader = opts.op === 'toRgd'
+                        ? makeRgdParentLoader(attribBase, dict)
+                        : null;
+
+                    token.onCancellationRequested(() => pool?.cancel());
+
+                    const tasks = files.map(async inputFile => {
+                        if (token.isCancellationRequested) return;
+                        const outPath = inputFile.replace(
+                            opts.inputExt === '.rgd' ? /\.rgd$/i : /\.lua$/i,
+                            opts.outputExt,
+                        );
+                        try {
+                            await pool!.convert(opts.op, inputFile, outPath, attribBase);
+                            created.push(outPath);
+                        } catch (e: any) {
+                            // Workers may fail on a malformed file — fall back to
+                            // in-process conversion so a single bad input doesn't
+                            // fail the entire batch.
+                            try {
+                                if (opts.op === 'toLua' && fallbackParentLoader) {
+                                    const rgd = parseRgd(await fs.promises.readFile(inputFile), dict);
+                                    const luaCode = await rgdToLuaDifferential(rgd, fallbackParentLoader);
+                                    await fs.promises.writeFile(outPath, luaCode, 'utf8');
+                                    created.push(outPath);
+                                } else if (opts.op === 'toRgd' && rgdParentLoader) {
+                                    const luaCode = await fs.promises.readFile(inputFile, 'utf8');
+                                    const { gameData, version } = await luaToRgdResolved(luaCode, dict, rgdParentLoader);
+                                    writeRgdFile(outPath, gameData, dict, version);
+                                    created.push(outPath);
+                                } else {
+                                    throw e;
+                                }
+                            } catch (fallbackErr: any) {
+                                console.error(`Failed to process ${inputFile}: ${fallbackErr.message}`);
+                                errors++;
+                            }
+                        } finally {
+                            bumpProgress();
+                        }
+                    });
+                    await Promise.all(tasks);
+                } else {
+                    // Serial fallback (no workers available)
+                    const parentLoader = opts.op === 'toLua' ? makeLuaParentLoader(attribBase, dict) : null;
+                    const rgdParentLoader = opts.op === 'toRgd' ? makeRgdParentLoader(attribBase, dict) : null;
+                    for (let i = 0; i < files.length; i++) {
+                        if (token.isCancellationRequested) break;
+                        const inputFile = files[i];
+                        const outPath = inputFile.replace(
+                            opts.inputExt === '.rgd' ? /\.rgd$/i : /\.lua$/i,
+                            opts.outputExt,
+                        );
+                        try {
+                            if (opts.op === 'toLua') {
+                                const rgd = parseRgd(await fs.promises.readFile(inputFile), dict);
+                                const luaCode = await rgdToLuaDifferential(rgd, parentLoader!);
+                                await fs.promises.writeFile(outPath, luaCode, 'utf8');
+                            } else {
+                                const luaCode = await fs.promises.readFile(inputFile, 'utf8');
+                                const { gameData, version } = await luaToRgdResolved(luaCode, dict, rgdParentLoader!);
+                                writeRgdFile(outPath, gameData, dict, version);
+                            }
+                            created.push(outPath);
+                        } catch (e: any) {
+                            console.error(`Failed to process ${inputFile}: ${e.message}`);
+                            errors++;
+                        }
+                        bumpProgress();
+                        if (i % 10 === 0) await new Promise<void>(r => setImmediate(r));
+                    }
+                }
+            } finally {
+                pool?.dispose();
             }
-            vscode.window.showInformationMessage(`Compiled ${compiled} files${errors > 0 ? `, ${errors} errors` : ''}`);
+
+            const successes = done - errors;
+            vscode.window.showInformationMessage(
+                `${opts.verbPast} ${successes} files${errors > 0 ? `, ${errors} errors` : ''}`
+            );
             if (created.length > 0) {
                 const choice = await vscode.window.showQuickPick(
                     ['Keep generated files', 'Delete generated files (test cleanup)'],
-                    { placeHolder: `${created.length} .rgd files created — keep or delete?` }
+                    { placeHolder: `${created.length} ${opts.promptLabel} created — keep or delete?` }
                 );
                 if (choice?.startsWith('Delete')) {
                     let deleted = 0;
-                    for (const f of created) { try { fs.unlinkSync(f); deleted++; } catch { } }
-                    vscode.window.showInformationMessage(`Deleted ${deleted} generated RGD files`);
+                    await Promise.all(created.map(async f => {
+                        try { await fs.promises.unlink(f); deleted++; } catch { }
+                    }));
+                    vscode.window.showInformationMessage(`Deleted ${deleted} generated ${opts.promptLabel}`);
                 }
             }
         });

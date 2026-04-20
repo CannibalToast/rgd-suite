@@ -13,6 +13,7 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
     readonly onDidChangeFile: vscode.Event<vscode.FileChangeEvent[]> = this._emitter.event;
 
     private readonly FILE_CACHE_MAX = 50;
+    // LRU: `Map` preserves insertion order; touch on hit by delete+set.
     private fileCache = new Map<string, { version: number; mtime: number; text: string }>();
 
     constructor(private readonly context: vscode.ExtensionContext) {
@@ -42,9 +43,9 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
         return new vscode.Disposable(() => { });
     }
 
-    stat(uri: vscode.Uri): vscode.FileStat {
+    async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
         const realPath = this.toRealPath(uri);
-        const stats = fs.statSync(realPath);
+        const stats = await fs.promises.stat(realPath);
         return {
             type: vscode.FileType.File,
             ctime: stats.ctimeMs,
@@ -56,15 +57,19 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
     readDirectory(): [string, vscode.FileType][] { return []; }
     createDirectory(): void { }
 
-    readFile(uri: vscode.Uri): Uint8Array {
+    async readFile(uri: vscode.Uri): Promise<Uint8Array> {
         const realPath = this.toRealPath(uri);
         try {
-            const currentMtime = fs.statSync(realPath).mtimeMs;
+            const stats = await fs.promises.stat(realPath);
+            const currentMtime = stats.mtimeMs;
             const cached = this.fileCache.get(realPath);
             if (cached && cached.mtime === currentMtime) {
+                // Touch to move to LRU tail
+                this.fileCache.delete(realPath);
+                this.fileCache.set(realPath, cached);
                 return Buffer.from(cached.text, 'utf8');
             }
-            const buffer = fs.readFileSync(realPath);
+            const buffer = await fs.promises.readFile(realPath);
             const dict = DictionaryManager.getInstance().getDictionary(this.context);
             const rgdFile = parseRgd(buffer, dict);
             const localeMap = LocaleManager.getInstance().getLocaleMap(realPath);
@@ -80,7 +85,7 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
         }
     }
 
-    writeFile(uri: vscode.Uri, content: Uint8Array): void {
+    async writeFile(uri: vscode.Uri, content: Uint8Array): Promise<void> {
         const realPath = this.toRealPath(uri);
         const text = Buffer.from(content).toString('utf8');
         try {
@@ -89,7 +94,7 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
             const cached = this.fileCache.get(realPath);
             const finalVersion = cached?.version ?? version;
             const binaryBuffer = buildRgd(gameData, dict, finalVersion);
-            fs.writeFileSync(realPath, binaryBuffer);
+            await fs.promises.writeFile(realPath, binaryBuffer);
             this.fileCache.delete(realPath);
             this._emitter.fire([{ type: vscode.FileChangeType.Changed, uri }]);
             vscode.window.setStatusBarMessage(`✓ Saved ${path.basename(realPath)}`, 2000);
@@ -99,14 +104,14 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
         }
     }
 
-    delete(uri: vscode.Uri): void {
+    async delete(uri: vscode.Uri): Promise<void> {
         const realPath = this.toRealPath(uri);
-        fs.unlinkSync(realPath);
+        await fs.promises.unlink(realPath);
         this.fileCache.delete(realPath);
     }
 
-    rename(oldUri: vscode.Uri, newUri: vscode.Uri): void {
-        fs.renameSync(this.toRealPath(oldUri), this.toRealPath(newUri));
+    async rename(oldUri: vscode.Uri, newUri: vscode.Uri): Promise<void> {
+        await fs.promises.rename(this.toRealPath(oldUri), this.toRealPath(newUri));
     }
 }
 

@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { DictionaryManager } from './dictionaryManager';
 import { LocaleManager } from './localeManager';
+import { findAttribBase } from './attribUtils';
 
 class RgdTreeItem extends vscode.TreeItem {
     public editable: boolean = false;
@@ -89,56 +90,28 @@ export class RgdTreeProvider implements vscode.TreeDataProvider<RgdTreeItem> {
 
     async loadFromUri(uri: vscode.Uri) {
         try {
-            const mtime = fs.statSync(uri.fsPath).mtimeMs;
+            const mtime = (await fs.promises.stat(uri.fsPath)).mtimeMs;
             const hit = this._parseCache.get(uri.fsPath);
             if (hit && hit.mtime === mtime) {
+                // LRU touch
+                this._parseCache.delete(uri.fsPath);
+                this._parseCache.set(uri.fsPath, hit);
                 this.rgdData = hit.rgdData;
                 this.nodes = hit.nodes;
                 this.sourceUri = uri;
                 this._onDidChangeTreeData.fire();
                 return;
             }
-            const buffer = fs.readFileSync(uri.fsPath);
+            const buffer = await fs.promises.readFile(uri.fsPath);
             const dict = DictionaryManager.getInstance().getDictionary(this.context);
             this.dict = dict;
 
             const rgd = parseRgd(buffer, dict);
             this.rgdData = rgd;
 
-            let attribRoot: string | undefined;
-            const searchRoots = new Set<string>();
-            const workspaceFolders = vscode.workspace.workspaceFolders;
-            if (workspaceFolders) {
-                workspaceFolders.forEach(f => {
-                    searchRoots.add(f.uri.fsPath);
-                    searchRoots.add(path.dirname(f.uri.fsPath));
-                });
-            }
-
-            let currentDir = path.dirname(uri.fsPath);
-            let depth = 0;
-            while (currentDir !== path.dirname(currentDir) && depth < 15) {
-                searchRoots.add(currentDir);
-                currentDir = path.dirname(currentDir);
-                depth++;
-            }
-
-            for (const root of searchRoots) {
-                const testPaths = [
-                    path.join(root, 'data', 'attrib'),
-                    path.join(root, 'attrib'),
-                    path.join(root, 'Engine', 'data', 'attrib'),
-                    path.join(root, 'W40K', 'data', 'attrib'),
-                    root
-                ];
-                for (const tp of testPaths) {
-                    if (fs.existsSync(tp) && fs.statSync(tp).isDirectory()) {
-                        attribRoot = tp;
-                        break;
-                    }
-                }
-                if (attribRoot) break;
-            }
+            // Unified attrib-root discovery shared with the rest of the
+            // extension (Tier 2 #12).
+            const attribRoot = findAttribBase(uri.fsPath) ?? undefined;
 
             const localeMap = LocaleManager.getInstance().getLocaleMap(uri.fsPath);
             this.nodes = rgdToTree(rgd.gameData, attribRoot, localeMap);
