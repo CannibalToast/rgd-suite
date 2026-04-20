@@ -347,26 +347,35 @@ export class RgdCommands {
                             await pool!.convert(opts.op, inputFile, outPath, attribBase);
                             created.push(outPath);
                         } catch (e: any) {
-                            // Workers may fail on a malformed file — fall back to
-                            // in-process conversion so a single bad input doesn't
-                            // fail the entire batch.
-                            try {
-                                if (opts.op === 'toLua' && fallbackParentLoader) {
-                                    const rgd = parseRgd(await fs.promises.readFile(inputFile), dict);
-                                    const luaCode = await rgdToLuaDifferential(rgd, fallbackParentLoader);
-                                    await fs.promises.writeFile(outPath, luaCode, 'utf8');
-                                    created.push(outPath);
-                                } else if (opts.op === 'toRgd' && rgdParentLoader) {
-                                    const luaCode = await fs.promises.readFile(inputFile, 'utf8');
-                                    const { gameData, version } = await luaToRgdResolved(luaCode, dict, rgdParentLoader);
-                                    writeRgdFile(outPath, gameData, dict, version);
-                                    created.push(outPath);
-                                } else {
-                                    throw e;
+                            // Don't re-run work on the extension host if the user
+                            // just cancelled — pool.cancel() rejects the rest of
+                            // the queue with Error('Cancelled') and falling back
+                            // here would process every remaining file serially,
+                            // defeating the cancel button.
+                            if (token.isCancellationRequested) {
+                                // Intentionally no-op: progress is bumped in finally.
+                            } else {
+                                // Workers may fail on a malformed file — fall back to
+                                // in-process conversion so a single bad input doesn't
+                                // fail the entire batch.
+                                try {
+                                    if (opts.op === 'toLua' && fallbackParentLoader) {
+                                        const rgd = parseRgd(await fs.promises.readFile(inputFile), dict);
+                                        const luaCode = await rgdToLuaDifferential(rgd, fallbackParentLoader);
+                                        await fs.promises.writeFile(outPath, luaCode, 'utf8');
+                                        created.push(outPath);
+                                    } else if (opts.op === 'toRgd' && rgdParentLoader) {
+                                        const luaCode = await fs.promises.readFile(inputFile, 'utf8');
+                                        const { gameData, version } = await luaToRgdResolved(luaCode, dict, rgdParentLoader);
+                                        writeRgdFile(outPath, gameData, dict, version);
+                                        created.push(outPath);
+                                    } else {
+                                        throw e;
+                                    }
+                                } catch (fallbackErr: any) {
+                                    console.error(`Failed to process ${inputFile}: ${fallbackErr.message}`);
+                                    errors++;
                                 }
-                            } catch (fallbackErr: any) {
-                                console.error(`Failed to process ${inputFile}: ${fallbackErr.message}`);
-                                errors++;
                             }
                         } finally {
                             bumpProgress();
