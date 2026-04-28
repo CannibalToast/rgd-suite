@@ -210,7 +210,7 @@ function processRgdData(reader, dict, parentType = types_1.RgdDataType.Table) {
         reader.position = savedPos;
         const entry = {
             hash: entryHash,
-            name: name !== null && name !== undefined ? name : (0, hash_1.hashToHex)(entryHash),
+            name: name ?? (0, hash_1.hashToHex)(entryHash),
             type: entryType === types_1.RgdDataType.TableInt ? types_1.RgdDataType.Table : entryType,
             value
         };

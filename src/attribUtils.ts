@@ -20,28 +20,31 @@ const _ATTRIB_BASE_CACHE_MAX = 2000;
 const _attribBaseCache = new Map<string, string | null>();
 
 // Canonical attrib root finder — checks path for /attrib/, then walks up.
+// Cache key is the directory (not the full file path) so every file in the
+// same folder shares one entry instead of O(files).
 export function findAttribBase(filePath: string): string | null {
-    const cached = _attribBaseCache.get(filePath);
+    const dirKey = path.dirname(filePath);
+    const cached = _attribBaseCache.get(dirKey);
     if (cached !== undefined) return cached;
 
     const normalized = filePath.replace(/\\/g, '/').toLowerCase();
     const idx = normalized.lastIndexOf('/attrib/');
     if (idx !== -1) {
         const result = filePath.substring(0, idx + 7);
-        rememberAttribBase(filePath, result);
+        rememberAttribBase(dirKey, result);
         return result;
     }
-    let dir = path.dirname(filePath);
+    let dir = dirKey;
     for (let d = 0; d < 15; d++) {
         const dataAttrib = path.join(dir, 'data', 'attrib');
         const attrib = path.join(dir, 'attrib');
-        if (fs.existsSync(dataAttrib)) { rememberAttribBase(filePath, dataAttrib); return dataAttrib; }
-        if (fs.existsSync(attrib)) { rememberAttribBase(filePath, attrib); return attrib; }
+        if (fs.existsSync(dataAttrib)) { rememberAttribBase(dirKey, dataAttrib); return dataAttrib; }
+        if (fs.existsSync(attrib)) { rememberAttribBase(dirKey, attrib); return attrib; }
         const parent = path.dirname(dir);
         if (parent === dir) break;
         dir = parent;
     }
-    rememberAttribBase(filePath, null);
+    rememberAttribBase(dirKey, null);
     return null;
 }
 
