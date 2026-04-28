@@ -192,8 +192,8 @@
         "category": "RGD Suite"
       },
       {
-        "command": "rgdEditor.installPowerShellModule",
-        "title": "Install PowerShell Module",
+        "command": "rgdEditor.openPowerShellSetup",
+        "title": "Open PowerShell Terminal with CLI",
         "category": "RGD Suite"
       }
     ],

@@ -15,3 +15,6 @@ build-vsix.ps1
 .eslintrc*
 !dictionaries/**
 bundled/**/node_modules/**
+
+# Explicitly ship the standalone CLI and setup script
+!cli/**
