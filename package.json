@@ -87,159 +87,211 @@
     "commands": [
       {
         "command": "rgdEditor.openRgd",
-        "title": "RGD: Open (Table Editor)"
+        "title": "Open (Table Editor)",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.openRgdText",
-        "title": "RGD: Open (Plain Text Editor)"
+        "title": "Open (Plain Text Editor)",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.convertToText",
-        "title": "RGD: Convert to Text Format"
+        "title": "Convert to Text Format",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.convertToBinary",
-        "title": "RGD: Convert Text to Binary"
+        "title": "Convert Text to Binary",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.showInfo",
-        "title": "RGD: Show File Info"
+        "title": "Show File Info",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.extractFromSga",
-        "title": "RGD: Extract from SGA Archive"
+        "title": "Extract from SGA Archive",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.dumpToLua",
-        "title": "RGD: Dump to Lua"
+        "title": "Dump to Lua",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.compileToRgd",
-        "title": "RGD: Compile Lua to RGD"
+        "title": "Compile Lua to RGD",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.editValue",
-        "title": "RGD: Edit Value",
+        "title": "Edit Value",
+        "category": "RGD Suite",
         "icon": "$(edit)"
       },
       {
         "command": "rgdEditor.batchToLua",
-        "title": "RGD: Batch Convert Folder to Lua"
+        "title": "Batch Convert Folder to Lua",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.batchToRgd",
-        "title": "RGD: Batch Compile Folder to RGD"
+        "title": "Batch Compile Folder to RGD",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.selectLocaleFolder",
-        "title": "RGD: Select Locale Folder"
+        "title": "Select Locale Folder",
+        "category": "RGD Suite"
       },
       {
         "command": "rgdEditor.refreshTree",
-        "title": "RGD: Refresh Tree View"
+        "title": "Refresh Tree View",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdEditor.revealNode",
+        "title": "Reveal Node",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdEditor.loadTreeView",
+        "title": "Load Tree View",
+        "category": "RGD Suite"
       },
       {
         "command": "rgd.fromLua",
-        "title": "RGD: Convert Lua to RGD (CLI)",
+        "title": "Convert Lua to RGD (CLI)",
         "category": "RGD Suite"
       },
       {
         "command": "rgd.toLua",
-        "title": "RGD: Convert RGD to Lua (CLI)",
+        "title": "Convert RGD to Lua (CLI)",
         "category": "RGD Suite"
       },
       {
         "command": "rgd.info",
-        "title": "RGD: Show RGD Info (CLI)",
+        "title": "Show RGD Info (CLI)",
         "category": "RGD Suite"
       },
       {
         "command": "rgd.validate",
-        "title": "RGD: Validate File (CLI)",
+        "title": "Validate File (CLI)",
         "category": "RGD Suite"
       },
       {
         "command": "rgdSuite.checkParity",
-        "title": "RGD: Check Parity (RGD ↔ Lua)",
+        "title": "Check Parity (RGD ↔ Lua)",
         "category": "RGD Suite"
       },
       {
         "command": "rgdSuite.batchCheckParity",
-        "title": "RGD: Batch Parity Check (Folder)",
+        "title": "Batch Parity Check (Folder)",
         "category": "RGD Suite"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "rgdSuite.explorerContext",
+        "label": "RGD Suite",
+        "icon": "$(database)"
       }
     ],
     "menus": {
       "explorer/context": [
         {
+          "submenu": "rgdSuite.explorerContext",
+          "group": "2_workspace@99",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceExtname == .sga || resourceExtname == .rgd.txt || explorerResourceIsFolder"
+        }
+      ],
+      "rgdSuite.explorerContext": [
+        {
           "when": "resourceExtname == .rgd",
           "command": "rgdEditor.openRgd",
-          "group": "navigation"
+          "group": "open@1"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgdEditor.openRgdText",
-          "group": "navigation"
+          "group": "open@2"
+        },
+        {
+          "when": "resourceExtname == .rgd || resourceExtname == .lua",
+          "command": "rgdSuite.checkParity",
+          "group": "convert@1"
         },
         {
           "when": "resourceExtname == .rgd",
-          "command": "rgdEditor.showInfo",
-          "group": "rgd"
+          "command": "rgdEditor.convertToText",
+          "group": "convert@2"
         },
         {
-          "when": "resourceExtname == .rgd",
-          "command": "rgdEditor.selectLocaleFolder",
-          "group": "rgd"
-        },
-        {
-          "when": "resourceExtname == .sga",
-          "command": "rgdEditor.extractFromSga",
-          "group": "rgd"
+          "when": "resourceExtname == .rgd.txt",
+          "command": "rgdEditor.convertToBinary",
+          "group": "convert@3"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgdEditor.dumpToLua",
-          "group": "rgd@1"
+          "group": "convert@4"
         },
         {
           "when": "resourceExtname == .lua",
           "command": "rgdEditor.compileToRgd",
-          "group": "rgd@1"
+          "group": "convert@5"
         },
         {
           "when": "resourceExtname == .lua",
           "command": "rgd.fromLua",
-          "group": "rgd@2"
+          "group": "cli@1"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgd.toLua",
-          "group": "rgd@2"
+          "group": "cli@2"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgd.info",
-          "group": "rgd@2"
+          "group": "cli@3"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgd.validate",
-          "group": "rgd@2"
+          "group": "cli@4"
         },
         {
           "when": "resourceExtname == .rgd",
-          "command": "rgdSuite.checkParity",
-          "group": "rgd@3"
+          "command": "rgdEditor.showInfo",
+          "group": "info@1"
         },
         {
-          "when": "resourceExtname == .lua",
-          "command": "rgdSuite.checkParity",
-          "group": "rgd@3"
+          "when": "resourceExtname == .sga",
+          "command": "rgdEditor.extractFromSga",
+          "group": "info@2"
+        },
+        {
+          "when": "explorerResourceIsFolder",
+          "command": "rgdEditor.batchToLua",
+          "group": "batch@1"
+        },
+        {
+          "when": "explorerResourceIsFolder",
+          "command": "rgdEditor.batchToRgd",
+          "group": "batch@2"
         },
         {
           "when": "explorerResourceIsFolder",
           "command": "rgdSuite.batchCheckParity",
-          "group": "rgd@3"
+          "group": "batch@3"
+        },
+        {
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || explorerResourceIsFolder",
+          "command": "rgdEditor.selectLocaleFolder",
+          "group": "config@1"
         }
       ],
       "view/item/context": [
