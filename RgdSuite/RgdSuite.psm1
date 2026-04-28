@@ -62,6 +62,26 @@ function _FindCli {
         }
     }
 
+    # VS Code forks — Cursor, Windsurf, VSCodium, Insiders
+    $forkDirs = @(
+        (Join-Path $env:USERPROFILE '.cursor'       'extensions')
+        (Join-Path $env:USERPROFILE '.windsurf'      'extensions')
+        (Join-Path $env:USERPROFILE '.codeium'       'extensions')
+        (Join-Path $env:USERPROFILE '.vscode-oss'    'extensions')
+        (Join-Path $env:USERPROFILE '.vscode-insiders' 'extensions')
+        (Join-Path $env:USERPROFILE '.vscodium'      'extensions')
+    )
+    foreach ($extDir in $forkDirs) {
+        if (Test-Path $extDir) {
+            $dir = Get-ChildItem -Path $extDir -Directory -Filter 'CannibalToast.rgd-suite-*' |
+                   Sort-Object Name -Descending | Select-Object -First 1
+            if ($dir) {
+                $c = Join-Path $dir.FullName 'cli' 'rgd-cli.js'
+                if (Test-Path $c) { return $c }
+            }
+        }
+    }
+
     # Development / repo checkout (cwd is the repo root)
     $dev = Join-Path $PSScriptRoot '..' 'cli' 'rgd-cli.js' | Resolve-Path -ErrorAction SilentlyContinue
     if ($dev -and (Test-Path $dev)) { return $dev }
@@ -330,6 +350,58 @@ function Invoke-RgdBatchToRgd {
     _InvokeRgd @cliArgs
 }
 
+function Get-RgdSuiteModulePath {
+    <#
+    .SYNOPSIS
+        Return the full filesystem path to this RgdSuite module.
+    #>
+    [CmdletBinding()]
+    param()
+    return (Get-Item $PSScriptRoot).FullName
+}
+
+function Install-RgdSuiteModule {
+    <#
+    .SYNOPSIS
+        Permanently add RgdSuite to the current user's PowerShell profile.
+    .DESCRIPTION
+        Appends an Import-Module line to $PROFILE (creates the file if it does
+        not exist). After running this cmdlet, RgdSuite aliases are available
+        in every new PowerShell session without manual Import-Module.
+    .PARAMETER Scope
+        Which profile to modify: CurrentUser (default) or AllUsers.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [ValidateSet('CurrentUser','AllUsers')]
+        [string] $Scope = 'CurrentUser'
+    )
+
+    $profilePath = if ($Scope -eq 'AllUsers') { $PROFILE.AllUsersAllHosts } else { $PROFILE.CurrentUserCurrentHost }
+    if (-not $profilePath) {
+        $profilePath = $PROFILE
+    }
+
+    $modDir  = (Get-Item $PSScriptRoot).FullName
+    $modPath = Join-Path $modDir 'RgdSuite.psd1'
+    $line    = "Import-Module `"$modPath`" -ErrorAction SilentlyContinue"
+
+    $content = if (Test-Path $profilePath) { Get-Content -Raw $profilePath } else { '' }
+    if ($content -and $content.Contains($line)) {
+        Write-Host "RgdSuite is already imported in `$PROFILE." -ForegroundColor Green
+        return
+    }
+
+    if ($PSCmdlet.ShouldProcess($profilePath, 'append Import-Module RgdSuite')) {
+        $dir = Split-Path $profilePath
+        if (-not (Test-Path $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        Add-Content -Path $profilePath -Value "`n# RGD Suite PowerShell module`n$line`n" -Encoding utf8BOM
+        Write-Host "Added RgdSuite to `$PROFILE. Restart your terminal or run '. `$PROFILE' to load." -ForegroundColor Green
+    }
+}
+
 # ── Aliases ────────────────────────────────────────────────────────────────
 
 New-Alias -Name 'rgd-toText'   -Value 'ConvertTo-RgdText'      -Force -Scope Global
@@ -365,7 +437,8 @@ Export-ModuleMember -Function @(
     'ConvertTo-RgdLua',  'ConvertFrom-RgdLua',
     'Get-RgdInfo', 'Get-RgdHash',
     'Expand-RgdSga',
-    'Invoke-RgdBatchToLua', 'Invoke-RgdBatchToRgd'
+    'Invoke-RgdBatchToLua', 'Invoke-RgdBatchToRgd',
+    'Get-RgdSuiteModulePath', 'Install-RgdSuiteModule'
 ) -Alias @(
     'rgd-toText', 'rgd-fromText',
     'rgd-toLua',  'rgd-fromLua',

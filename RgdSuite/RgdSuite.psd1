@@ -12,7 +12,8 @@
         'ConvertTo-RgdLua',  'ConvertFrom-RgdLua',
         'Get-RgdInfo', 'Get-RgdHash',
         'Expand-RgdSga',
-        'Invoke-RgdBatchToLua', 'Invoke-RgdBatchToRgd'
+        'Invoke-RgdBatchToLua', 'Invoke-RgdBatchToRgd',
+        'Get-RgdSuiteModulePath', 'Install-RgdSuiteModule'
     )
     AliasesToExport    = @(
         'rgd-toText', 'rgd-fromText',

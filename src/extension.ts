@@ -166,6 +166,49 @@ export function activate(context: vscode.ExtensionContext) {
     // Register parity checker commands
     registerParityCommands(context);
 
+    // PowerShell module setup — one-time notification + manual command
+    const psModulePath = path.join(context.extensionPath, 'RgdSuite', 'RgdSuite.psd1');
+    if (fs.existsSync(psModulePath)) {
+        context.subscriptions.push(
+            vscode.commands.registerCommand('rgdEditor.installPowerShellModule', async () => {
+                const action = await vscode.window.showInformationMessage(
+                    'RGD Suite PowerShell module detected. How do you want to set it up?',
+                    { modal: false },
+                    'Install to $PROFILE',
+                    'Copy path to clipboard',
+                    'Show in terminal'
+                );
+                if (action === 'Install to $PROFILE') {
+                    const terminal = vscode.window.createTerminal('RGD Suite Install');
+                    terminal.sendText(`Import-Module "${psModulePath}"; Install-RgdSuiteModule`);
+                    terminal.show();
+                } else if (action === 'Copy path to clipboard') {
+                    await vscode.env.clipboard.writeText(psModulePath);
+                    vscode.window.showInformationMessage('RGD Suite module path copied to clipboard.');
+                } else if (action === 'Show in terminal') {
+                    const terminal = vscode.window.createTerminal('RGD Suite');
+                    terminal.sendText(`Import-Module "${psModulePath}"`);
+                    terminal.show();
+                }
+            })
+        );
+
+        // One-time notification
+        const hasPrompted = context.globalState.get<boolean>('rgdSuite.psModulePrompted');
+        if (!hasPrompted) {
+            vscode.window.showInformationMessage(
+                'RGD Suite PowerShell module is available. Install it for terminal access?',
+                'Install now',
+                'Maybe later'
+            ).then(choice => {
+                if (choice === 'Install now') {
+                    vscode.commands.executeCommand('rgdEditor.installPowerShellModule');
+                }
+                context.globalState.update('rgdSuite.psModulePrompted', true);
+            });
+        }
+    }
+
     // Guard: if a .rgd binary is opened directly as a text doc (bypasses custom editor),
     // redirect immediately to the VFS-backed text view with proper language
     context.subscriptions.push(
