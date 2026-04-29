@@ -58,37 +58,83 @@ $global:RgdCli = Join-Path $global:RgdSuiteHome 'cli' 'rgd-cli.js'
 function global:rgd { & node $global:RgdCli @args }
 
 function global:rgd-toText {
-    param([Parameter(Mandatory)] [string] $Path, [string] $Out)
-    $a = @('to-text', $Path); if ($Out) { $a += '-o', $Out }
-    rgd @a
+    param(
+        [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('FullName')]
+        [string] $Path,
+        [string] $Out
+    )
+    process {
+        $a = @('to-text', $Path); if ($Out) { $a += '-o', $Out }
+        rgd @a
+    }
 }
 
 function global:rgd-fromText {
-    param([Parameter(Mandatory)] [string] $Path, [string] $Out, [ValidateSet(1,3)] [int] $Version)
-    $a = @('from-text', $Path); if ($Out) { $a += '-o', $Out }; if ($Version) { $a += '--version', $Version }
-    rgd @a
+    param(
+        [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('FullName')]
+        [string] $Path,
+        [string] $Out,
+        [ValidateSet(1,3)] [int] $Version
+    )
+    process {
+        $a = @('from-text', $Path)
+        if ($Out)     { $a += '-o', $Out }
+        if ($Version) { $a += '--version', $Version }
+        rgd @a
+    }
 }
 
 function global:rgd-toLua {
-    param([Parameter(Mandatory)] [string] $Path, [string] $Out, [string] $Attrib)
-    $a = @('to-lua', $Path); if ($Out) { $a += '-o', $Out }; if ($Attrib) { $a += '-a', $Attrib }
-    rgd @a
+    param(
+        [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('FullName')]
+        [string] $Path,
+        [string] $Out,
+        [string] $Attrib
+    )
+    process {
+        $a = @('to-lua', $Path)
+        if ($Out)    { $a += '-o', $Out }
+        if ($Attrib) { $a += '-a', $Attrib }
+        rgd @a
+    }
 }
 
 function global:rgd-fromLua {
-    param([Parameter(Mandatory)] [string] $Path, [string] $Out, [string] $Attrib, [ValidateSet(1,3)] [int] $Version)
-    $a = @('from-lua', $Path); if ($Out) { $a += '-o', $Out }; if ($Attrib) { $a += '-a', $Attrib }; if ($Version) { $a += '--version', $Version }
-    rgd @a
+    param(
+        [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('FullName')]
+        [string] $Path,
+        [string] $Out,
+        [string] $Attrib,
+        [ValidateSet(1,3)] [int] $Version
+    )
+    process {
+        $a = @('from-lua', $Path)
+        if ($Out)     { $a += '-o', $Out }
+        if ($Attrib)  { $a += '-a', $Attrib }
+        if ($Version) { $a += '--version', $Version }
+        rgd @a
+    }
 }
 
 function global:rgd-info {
-    param([Parameter(Mandatory, ValueFromPipeline)] [string] $Path)
+    param(
+        [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('FullName')]
+        [string] $Path
+    )
     process { rgd info $Path | ConvertFrom-Json }
 }
 
 function global:rgd-hash {
-    param([Parameter(Mandatory)] [string] $String)
-    rgd hash $String | ConvertFrom-Json
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [string] $String
+    )
+    process { rgd hash $String | ConvertFrom-Json }
 }
 
 Write-Host "RGD Suite ready: $global:RgdSuiteHome" -ForegroundColor Green
