@@ -190,6 +190,11 @@
         "command": "rgdSuite.batchCheckParity",
         "title": "Batch Parity Check (Folder)",
         "category": "RGD Suite"
+      },
+      {
+        "command": "rgdEditor.openPowerShellSetup",
+        "title": "Open PowerShell Terminal with CLI",
+        "category": "RGD Suite"
       }
     ],
     "submenus": [

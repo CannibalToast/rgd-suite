@@ -166,6 +166,18 @@ export function activate(context: vscode.ExtensionContext) {
     // Register parity checker commands
     registerParityCommands(context);
 
+    // PowerShell setup — open terminal with setup.ps1 sourced
+    const setupScript = path.join(context.extensionPath, 'cli', 'setup.ps1');
+    if (fs.existsSync(setupScript)) {
+        context.subscriptions.push(
+            vscode.commands.registerCommand('rgdEditor.openPowerShellSetup', async () => {
+                const terminal = vscode.window.createTerminal('RGD Suite');
+                terminal.sendText(`. "${setupScript}"`);
+                terminal.show();
+            })
+        );
+    }
+
     // Guard: if a .rgd binary is opened directly as a text doc (bypasses custom editor),
     // redirect immediately to the VFS-backed text view with proper language
     context.subscriptions.push(
