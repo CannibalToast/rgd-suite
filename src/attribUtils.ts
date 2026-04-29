@@ -13,22 +13,46 @@ import {
 import { RgdTable } from '../bundled/rgd-tools/dist/types';
 import { HashDictionary } from '../bundled/rgd-tools/dist/dictionary';
 
+// Memoize attrib-root discovery by normalized file path. Attrib roots rarely
+// change during a session and the lookup is called per file open / per tree
+// node, so caching is a clean win (Tier 2 #12).
+const _ATTRIB_BASE_CACHE_MAX = 2000;
+const _attribBaseCache = new Map<string, string | null>();
+
 // Canonical attrib root finder — checks path for /attrib/, then walks up.
+// Cache key is the directory (not the full file path) so every file in the
+// same folder shares one entry instead of O(files).
 export function findAttribBase(filePath: string): string | null {
+    const dirKey = path.dirname(filePath);
+    const cached = _attribBaseCache.get(dirKey);
+    if (cached !== undefined) return cached;
+
     const normalized = filePath.replace(/\\/g, '/').toLowerCase();
     const idx = normalized.lastIndexOf('/attrib/');
-    if (idx !== -1) return filePath.substring(0, idx + 7);
-    let dir = path.dirname(filePath);
+    if (idx !== -1) {
+        const result = filePath.substring(0, idx + 7);
+        rememberAttribBase(dirKey, result);
+        return result;
+    }
+    let dir = dirKey;
     for (let d = 0; d < 15; d++) {
         const dataAttrib = path.join(dir, 'data', 'attrib');
         const attrib = path.join(dir, 'attrib');
-        if (fs.existsSync(dataAttrib)) return dataAttrib;
-        if (fs.existsSync(attrib)) return attrib;
+        if (fs.existsSync(dataAttrib)) { rememberAttribBase(dirKey, dataAttrib); return dataAttrib; }
+        if (fs.existsSync(attrib)) { rememberAttribBase(dirKey, attrib); return attrib; }
         const parent = path.dirname(dir);
         if (parent === dir) break;
         dir = parent;
     }
+    rememberAttribBase(dirKey, null);
     return null;
+}
+
+function rememberAttribBase(key: string, value: string | null): void {
+    if (_attribBaseCache.size >= _ATTRIB_BASE_CACHE_MAX) {
+        _attribBaseCache.delete(_attribBaseCache.keys().next().value!);
+    }
+    _attribBaseCache.set(key, value);
 }
 
 // LuaFileLoader that tries .lua first, falls back to .rgd->lua, and caches results.
@@ -114,6 +138,7 @@ export function countEntries(entries: any[]): { totalEntries: number; tableCount
 }
 
 // Recursively collect all files with the given extension under folder.
+// Kept for backward compatibility; prefer `collectFilesAsync` on hot paths.
 export function collectFiles(folder: string, ext: string): string[] {
     const results: string[] = [];
     const walk = (dir: string) => {
@@ -129,5 +154,27 @@ export function collectFiles(folder: string, ext: string): string[] {
         }
     };
     walk(folder);
+    return results;
+}
+
+// Async walker that doesn't block the extension host. Yields control between
+// directories so large trees don't stall the UI.
+export async function collectFilesAsync(folder: string, ext: string): Promise<string[]> {
+    const results: string[] = [];
+    const stack: string[] = [folder];
+    while (stack.length) {
+        const dir = stack.pop()!;
+        let entries: fs.Dirent[];
+        try {
+            entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+        for (const e of entries) {
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) stack.push(full);
+            else if (e.isFile() && e.name.toLowerCase().endsWith(ext)) results.push(full);
+        }
+    }
     return results;
 }

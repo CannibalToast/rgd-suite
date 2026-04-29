@@ -122,7 +122,9 @@
         const row = document.createElement('div');
         row.className = 'tree-row';
         row.style.paddingLeft = (8 + depth * 16) + 'px';
-        row.dataset.path = JSON.stringify(path);
+        // Use dot-joined path as the DOM key — faster than JSON.stringify
+        // and still unique because path is a numeric index array.
+        row.dataset.path = path.join('.');
         nodeRegistry.set(row.dataset.path, row);
 
         const toggle = document.createElement('span');
@@ -210,7 +212,7 @@
 
     function selectNode(node, path) {
         if (selectedRow) selectedRow.classList.remove('selected');
-        const row = nodeRegistry.get(JSON.stringify(path));
+        const row = nodeRegistry.get(path.join('.'));
         if (row) { row.classList.add('selected'); selectedRow = row; }
         selectedNode = { node: node, path: path };
         renderPropertyGrid(node);
@@ -278,7 +280,7 @@
             const inputValue = dataType === 'Boolean' ? (node.value ? ' checked' : '') : ' value="' + esc(String(node.value)) + '"';
             const inputStep = dataType === 'Float' ? ' step="any"' : '';
             html += '<tr class="property-row"><td class="property-name">' + dataType + '</td><td class="property-value">';
-            html += '<input type="' + inputType + '" class="property-input editable-value" data-path="' + esc(JSON.stringify(nodePath)) + '" data-type="' + dataType + '"' + inputValue + inputStep + '>';
+            html += '<input type="' + inputType + '" class="property-input editable-value" data-path="' + esc(nodePath.join('.')) + '" data-type="' + dataType + '"' + inputValue + inputStep + '>';
             if (node.localeText) {
                 html += '<div style="opacity:0.6;font-size:11px;margin-top:2px;">' + esc(node.localeText) + '</div>';
             }
@@ -327,7 +329,7 @@
                         const cType = typeof child.value;
                         const cInputType = cType === 'boolean' ? 'checkbox' : (cType === 'number' ? 'number' : 'text');
                         const cInputValue = cType === 'boolean' ? (child.value ? ' checked' : '') : ' value="' + esc(String(child.value)) + '"';
-                        childValue = '<input type="' + cInputType + '" class="property-input editable-value" data-path="' + esc(JSON.stringify(childPath)) + '" data-key="' + esc(childName) + '"' + cInputValue + '>';
+                        childValue = '<input type="' + cInputType + '" class="property-input editable-value" data-path="' + esc(childPath.join('.')) + '" data-key="' + esc(childName) + '"' + cInputValue + '>';
                         if (child.localeText) {
                             childValue += '<div style="opacity:0.6;font-size:11px;margin-top:2px;">' + esc(child.localeText) + '</div>';
                         }
@@ -371,7 +373,7 @@
         // Add change handlers for editable inputs
         content.querySelectorAll('.editable-value').forEach(function (input) {
             input.addEventListener('change', function () {
-                const path = JSON.parse(input.dataset.path);
+                const path = input.dataset.path.split('.').map(Number);
                 const key = input.dataset.key || null;
                 let value;
                 if (input.type === 'checkbox') {

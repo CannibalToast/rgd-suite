@@ -93,16 +93,12 @@ function writeTableContents(lines, table, indent, localeMap) {
             if (entry.type === types_1.RgdDataType.WString || entry.type === types_1.RgdDataType.String) {
                 const val = entry.value;
                 if (val.startsWith('$') && localeMap) {
-                    const locEntry = localeMap.get(val);
+                    // LocaleManager stores keys without the `$` sigil (see
+                    // src/localeLoader.ts). Strip it once; fall back to the
+                    // raw key for older maps that still include it.
+                    const locEntry = localeMap.get(val.substring(1)) || localeMap.get(val);
                     if (locEntry) {
                         comment = ` - ${locEntry.text}`;
-                    }
-                    else {
-                        // Fallback: try without the $ if the map keys don't have it
-                        const locEntryNoId = localeMap.get(val.substring(1));
-                        if (locEntryNoId) {
-                            comment = ` - ${locEntryNoId.text}`;
-                        }
                     }
                 }
             }

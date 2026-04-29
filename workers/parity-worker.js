@@ -17,30 +17,53 @@ const { RgdDataType }                        = require(path.join(dist, 'types.js
 // Load dictionary once per worker
 const dict = createAndLoadDictionaries(workerData.dictPaths || []);
 
-const FLOAT_EPSILON    = 1e-4;
-const CACHE_MAX        = 500;
-const attribBaseCache  = new Map();
+const FLOAT_EPSILON         = 1e-4;
+const FILE_CACHE_MAX        = 500;
+const ATTRIB_BASE_CACHE_MAX = 2000;
+const attribBaseCache       = new Map();
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+function rememberAttribBase(key, value) {
+    if (attribBaseCache.has(key)) attribBaseCache.delete(key);
+    else if (attribBaseCache.size >= ATTRIB_BASE_CACHE_MAX) {
+        attribBaseCache.delete(attribBaseCache.keys().next().value);
+    }
+    attribBaseCache.set(key, value);
+}
 
 function findAttribBase(filePath) {
     const norm = filePath.replace(/\\/g, '/').toLowerCase();
     const idx  = norm.lastIndexOf('/attrib/');
     if (idx !== -1) return filePath.substring(0, idx + 7);
     const dir = path.dirname(filePath);
-    if (attribBaseCache.has(dir)) return attribBaseCache.get(dir);
+    if (attribBaseCache.has(dir)) {
+        const v = attribBaseCache.get(dir);
+        // LRU touch
+        attribBaseCache.delete(dir);
+        attribBaseCache.set(dir, v);
+        return v;
+    }
     let cur = dir;
     for (let d = 0; d < 15; d++) {
         const da = path.join(cur, 'data', 'attrib');
         const a  = path.join(cur, 'attrib');
-        if (fs.existsSync(da)) { attribBaseCache.set(dir, da); return da; }
-        if (fs.existsSync(a))  { attribBaseCache.set(dir, a);  return a;  }
+        if (fs.existsSync(da)) { rememberAttribBase(dir, da); return da; }
+        if (fs.existsSync(a))  { rememberAttribBase(dir, a);  return a;  }
         const parent = path.dirname(cur);
         if (parent === cur) break;
         cur = parent;
     }
-    attribBaseCache.set(dir, null);
+    rememberAttribBase(dir, null);
     return null;
+}
+
+function rememberFileCache(cache, key, value) {
+    if (cache.has(key)) cache.delete(key);
+    else if (cache.size >= FILE_CACHE_MAX) {
+        cache.delete(cache.keys().next().value);
+    }
+    cache.set(key, value);
 }
 
 function makeLuaFileLoader(attribBase, cache) {
@@ -49,25 +72,30 @@ function makeLuaFileLoader(attribBase, cache) {
         let clean = refPath.replace(/\\/g, '/');
         if (clean.endsWith('.lua')) clean = clean.slice(0, -4);
         const luaPath = path.join(attribBase, clean + '.lua');
-        if (cache.has(luaPath)) return cache.get(luaPath);
+        if (cache.has(luaPath)) {
+            const v = cache.get(luaPath);
+            cache.delete(luaPath);
+            cache.set(luaPath, v);
+            return v;
+        }
         if (fs.existsSync(luaPath)) {
             const c = fs.readFileSync(luaPath, 'utf8');
-            cache.set(luaPath, c);
+            rememberFileCache(cache, luaPath, c);
             return c;
         }
         const rgdPath = path.join(attribBase, clean + '.rgd');
         if (fs.existsSync(rgdPath)) {
             const c = rgdToLua(parseRgd(fs.readFileSync(rgdPath), dict));
-            cache.set(luaPath, c);
+            rememberFileCache(cache, luaPath, c);
             return c;
         }
-        cache.set(luaPath, null);
+        rememberFileCache(cache, luaPath, null);
         return null;
     };
 }
 
-function flattenRgd(table, prefix) {
-    const out = new Map();
+function flattenRgd(table, prefix, out) {
+    out = out || new Map();
     prefix = prefix || '';
     for (const entry of table.entries) {
         const k    = entry.name || ('#' + entry.hash.toString(16).padStart(8, '0'));
@@ -75,7 +103,7 @@ function flattenRgd(table, prefix) {
         switch (entry.type) {
             case RgdDataType.Table:
             case RgdDataType.TableInt:
-                if (entry.value) for (const [sk, sv] of flattenRgd(entry.value, full)) out.set(sk, sv);
+                if (entry.value) flattenRgd(entry.value, full, out);
                 break;
             case RgdDataType.Float:   out.set(full, { type: 'float',  value: entry.value }); break;
             case RgdDataType.Integer: out.set(full, { type: 'int',    value: entry.value }); break;
@@ -90,13 +118,13 @@ function flattenRgd(table, prefix) {
     return out;
 }
 
-function flattenLua(table, prefix) {
-    const out = new Map();
+function flattenLua(table, prefix, out) {
+    out = out || new Map();
     prefix = prefix || '';
     for (const [key, entry] of table.entries) {
         const full = prefix ? prefix + '.' + key : key;
         if (entry.type === 'table' && entry.table) {
-            for (const [sk, sv] of flattenLua(entry.table, full)) out.set(sk, sv);
+            flattenLua(entry.table, full, out);
         } else {
             const val = entry.value;
             if (val === null || val === undefined) {
@@ -180,7 +208,6 @@ function checkParity(rgdPath, luaPath, fileCache) {
 const fileCache = new Map();
 
 parentPort.on('message', function ({ id, rgdPath, luaPath }) {
-    if (fileCache.size >= CACHE_MAX) fileCache.clear();
     try {
         const result = checkParity(rgdPath, luaPath, fileCache);
         parentPort.postMessage({ id, result });

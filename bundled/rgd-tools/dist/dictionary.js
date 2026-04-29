@@ -52,8 +52,9 @@ function createDictionary() {
         hashToName: new Map(),
         nameToHash: new Map()
     };
-    // Pre-populate with numeric keys 1-9999 (common in RGD files)
-    for (let i = 1; i < 10000; i++) {
+    // Pre-populate with numeric keys 0..10000 (covers everything the reader's
+    // TableInt fallback used to brute-force).
+    for (let i = 0; i <= 10000; i++) {
         const name = i.toString();
         const h = (0, hash_1.hash)(name);
         dict.hashToName.set(h, name);
@@ -97,7 +98,6 @@ function nameToHash(dict, name) {
  *   # comments
  */
 function loadDictionary(dict, filePath) {
-    console.log(`[Dictionary] Loading: ${filePath}`);
     const content = fs.readFileSync(filePath, 'utf8');
     const lines = content.split(/\r?\n/);
     let count = 0;
@@ -121,7 +121,7 @@ function loadDictionary(dict, filePath) {
             count++;
         }
     }
-    console.log(`[Dictionary] Loaded ${count} new entries from ${path.basename(filePath)} (Total: ${dict.hashToName.size})`);
+
 }
 /**
  * Save custom dictionary entries to a file

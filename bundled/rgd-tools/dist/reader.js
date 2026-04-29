@@ -99,15 +99,18 @@ class BinaryReader {
         return str;
     }
     readNullTerminatedWString() {
-        const chars = [];
+        const start = this.pos;
         while (this.pos + 1 < this.buffer.length) {
             const code = this.buffer.readUInt16LE(this.pos);
             this.pos += 2;
-            if (code === 0)
-                break;
-            chars.push(code);
+            if (code === 0) {
+                // Decode the UTF-16LE range directly from the buffer — avoids
+                // allocating an intermediate array and risking stack-overflow
+                // on `String.fromCharCode(...chars)` for long strings.
+                return this.buffer.toString('utf16le', start, this.pos - 2);
+            }
         }
-        return String.fromCharCode(...chars);
+        return this.buffer.toString('utf16le', start, this.pos);
     }
 }
 /**
@@ -167,25 +170,11 @@ function processRgdData(reader, dict, parentType = types_1.RgdDataType.Table) {
         // Save position and seek to data
         const savedPos = reader.position;
         reader.position = dataOffset + dataOffsetRel;
-        // Resolve hash to name
-        let name = (0, dictionary_1.hashToName)(dict, entryHash);
-        if (!name) {
-            console.log(`[RGD Reader] Failed to resolve hash: 0x${entryHash.toString(16).toUpperCase()}`);
-        }
-        else {
-            // console.log(`[RGD Reader] Resolved hash 0x${entryHash.toString(16).toUpperCase()} to: ${name}`);
-        }
-        // For TableInt type, try numeric names
-        if (!name && parentType === types_1.RgdDataType.TableInt) {
-            for (let n = 0; n <= 10000; n++) {
-                const testName = n.toString();
-                const testHash = (0, hash_1.hash)(testName);
-                if (testHash === entryHash) {
-                    name = testName;
-                    break;
-                }
-            }
-        }
+        // Resolve hash to name. The dictionary pre-populates numeric keys
+        // 0..10000, so the previous TableInt brute-force (10k hash() calls per
+        // miss) is no longer needed — any TableInt index within that range is
+        // already resolved here.
+        const name = (0, dictionary_1.hashToName)(dict, entryHash);
         // Read value based on type
         let value;
         switch (entryType) {
