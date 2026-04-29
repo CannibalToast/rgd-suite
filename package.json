@@ -204,7 +204,7 @@
         {
           "submenu": "rgdSuite.explorerContext",
           "group": "2_workspace@99",
-          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceExtname == .sga || resourceExtname == .rgd.txt || explorerResourceIsFolder"
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceExtname == .sga || resourceFilename =~ /\\.rgd\\.txt$/ || explorerResourceIsFolder"
         }
       ],
       "rgdSuite.explorerContext": [
@@ -229,7 +229,7 @@
           "group": "convert@2"
         },
         {
-          "when": "resourceExtname == .rgd.txt",
+          "when": "resourceFilename =~ /\\.rgd\\.txt$/",
           "command": "rgdEditor.convertToBinary",
           "group": "convert@3"
         },
