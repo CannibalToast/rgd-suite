@@ -1,19 +1,15 @@
 import * as vscode from "vscode";
-import { parseRgd } from "../bundled/rgd-tools/dist/reader";
 import {
   HashDictionary,
   RgdDataType,
   dataTypeName,
-  LocaleEntry,
 } from "../bundled/rgd-tools/dist/types";
-import { rgdToTree, treeToRgd, RgdNode } from "./rgdTable";
+import { treeToRgd, RgdNode } from "./rgdTable";
 import { writeRgdFile } from "../bundled/rgd-tools/dist/writer";
 import * as path from "path";
-import * as fs from "fs";
 import { DictionaryManager } from "./dictionaryManager";
-import { LocaleManager } from "./localeManager";
-import { findAttribBase } from "./attribUtils";
 import { getErrorMessage } from "./errorUtils";
+import { getTreeNodes, invalidateParsedRgdCache } from "./parsedRgdCache";
 
 class RgdTreeItem extends vscode.TreeItem {
   public editable: boolean = false;
@@ -83,16 +79,6 @@ export class RgdTreeProvider implements vscode.TreeDataProvider<RgdTreeItem> {
   private dict: HashDictionary | null = null;
   private sourceUri: vscode.Uri | null = null;
   private rgdData: any = null;
-  private readonly _PARSE_CACHE_MAX = 30;
-  private _parseCache = new Map<
-    string,
-    {
-      mtime: number;
-      rgdData: any;
-      nodes: RgdNode[];
-      attribRoot: string | undefined;
-    }
-  >();
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -123,43 +109,13 @@ export class RgdTreeProvider implements vscode.TreeDataProvider<RgdTreeItem> {
 
   async loadFromUri(uri: vscode.Uri) {
     try {
-      const mtime = (await fs.promises.stat(uri.fsPath)).mtimeMs;
-      const hit = this._parseCache.get(uri.fsPath);
-      if (hit && hit.mtime === mtime) {
-        // LRU touch
-        this._parseCache.delete(uri.fsPath);
-        this._parseCache.set(uri.fsPath, hit);
-        this.rgdData = hit.rgdData;
-        this.nodes = hit.nodes;
-        this.sourceUri = uri;
-        this._onDidChangeTreeData.fire();
-        return;
-      }
-      const buffer = await fs.promises.readFile(uri.fsPath);
       const dict = DictionaryManager.getInstance().getDictionary(this.context);
       this.dict = dict;
-
-      const rgd = parseRgd(buffer, dict);
-      this.rgdData = rgd;
-
-      // Unified attrib-root discovery shared with the rest of the
-      // extension (Tier 2 #12).
-      const attribRoot = findAttribBase(uri.fsPath) ?? undefined;
-
-      const localeMap = LocaleManager.getInstance().getLocaleMap(uri.fsPath);
-      this.nodes = rgdToTree(rgd.gameData, attribRoot, localeMap);
-      if (this._parseCache.size >= this._PARSE_CACHE_MAX) {
-        const firstKey = this._parseCache.keys().next().value;
-        if (firstKey !== undefined) {
-          this._parseCache.delete(firstKey);
-        }
-      }
-      this._parseCache.set(uri.fsPath, {
-        mtime,
-        rgdData: rgd,
-        nodes: this.nodes,
-        attribRoot,
+      const { nodes, rgd } = await getTreeNodes(uri.fsPath, dict, {
+        resolvePaths: false,
       });
+      this.rgdData = rgd;
+      this.nodes = nodes;
       this.sourceUri = uri;
       this._onDidChangeTreeData.fire();
     } catch (err) {
@@ -214,6 +170,7 @@ export class RgdTreeProvider implements vscode.TreeDataProvider<RgdTreeItem> {
         this.dict,
         this.rgdData.header.version,
       );
+      invalidateParsedRgdCache(this.sourceUri.fsPath);
       this._onDidChangeTreeData.fire();
       vscode.window.setStatusBarMessage(
         "✓ Updated " + item.node.key + " = " + newValue,
@@ -275,9 +232,34 @@ export function registerRgdTreeView(context: vscode.ExtensionContext) {
     ),
   );
 
+  let treeDebounce: ReturnType<typeof setTimeout> | undefined;
+  let lastTreeRealPath: string | undefined;
   context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor(async (ed) => {
-      if (ed?.document) await provider.loadFromDocument(ed.document);
+    vscode.window.onDidChangeActiveTextEditor((ed) => {
+      if (!ed?.document) return;
+      let realPath: string | undefined;
+      if (ed.document.uri.scheme === "rgd") {
+        realPath = ed.document.uri.path;
+        realPath = decodeURIComponent(realPath);
+        realPath = realPath.replace(/^\/([a-zA-Z]):/, "$1:");
+        if (
+          realPath.startsWith("/") &&
+          /^[a-zA-Z]:/.test(realPath.substring(1))
+        ) {
+          realPath = realPath.substring(1);
+        }
+      } else if (
+        ed.document.uri.scheme === "file" &&
+        ed.document.uri.fsPath.toLowerCase().endsWith(".rgd")
+      ) {
+        realPath = ed.document.uri.fsPath;
+      }
+      if (!realPath || realPath === lastTreeRealPath) return;
+      if (treeDebounce) clearTimeout(treeDebounce);
+      treeDebounce = setTimeout(() => {
+        lastTreeRealPath = realPath;
+        void provider.loadFromDocument(ed.document);
+      }, 200);
     }),
   );
 

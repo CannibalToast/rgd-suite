@@ -16,6 +16,10 @@ const { parseRgd }                                        = require(path.join(di
 const { writeRgdFile }                                    = require(path.join(dist, 'writer.js'));
 const { rgdToLua, rgdToLuaDifferential,
         luaToRgdResolved, parseLuaToTable }               = require(path.join(dist, 'luaFormat.js'));
+const {
+    resolveAttribRefPath,
+    stripUtf8BomFromFile,
+} = require(path.join(__dirname, '..', 'cli', 'validators.js'));
 
 const dict = createAndLoadDictionaries(workerData.dictPaths || []);
 
@@ -31,21 +35,21 @@ function touch(cache, key, value) {
 function makeLuaFileLoader(attribBase) {
     return function loader(refPath) {
         if (!attribBase) return null;
-        let clean = refPath.replace(/\\/g, '/');
-        if (clean.endsWith('.lua')) clean = clean.slice(0, -4);
-        const luaPath = path.join(attribBase, clean + '.lua');
+        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
+        if (!luaPath) return null;
         if (luaFileCache.has(luaPath)) {
             const v = luaFileCache.get(luaPath);
             luaFileCache.delete(luaPath); luaFileCache.set(luaPath, v);
             return v;
         }
         if (fs.existsSync(luaPath)) {
-            const c = fs.readFileSync(luaPath, 'utf8');
+            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
+            const c = fixed.buffer.toString('utf8');
             touch(luaFileCache, luaPath, c);
             return c;
         }
-        const rgdPath = path.join(attribBase, clean + '.rgd');
-        if (fs.existsSync(rgdPath)) {
+        const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
+        if (rgdPath && fs.existsSync(rgdPath)) {
             const c = rgdToLua(parseRgd(fs.readFileSync(rgdPath), dict));
             touch(luaFileCache, luaPath, c);
             return c;
@@ -67,15 +71,14 @@ function makeLuaParentLoader(attribBase) {
 function makeRgdParentLoader(attribBase) {
     const self = async function (refPath) {
         if (!attribBase) return null;
-        let clean = refPath.replace(/\\/g, '/');
-        if (clean.endsWith('.lua')) clean = clean.slice(0, -4);
-        const rgdPath = path.join(attribBase, clean + '.rgd');
-        if (fs.existsSync(rgdPath)) {
+        const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
+        if (rgdPath && fs.existsSync(rgdPath)) {
             return parseRgd(fs.readFileSync(rgdPath), dict).gameData;
         }
-        const luaPath = path.join(attribBase, clean + '.lua');
-        if (fs.existsSync(luaPath)) {
-            const parentLua = fs.readFileSync(luaPath, 'utf8');
+        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
+        if (luaPath && fs.existsSync(luaPath)) {
+            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
+            const parentLua = fixed.buffer.toString('utf8');
             const { gameData } = await luaToRgdResolved(parentLua, dict, self);
             return gameData;
         }
@@ -93,7 +96,8 @@ async function doToLua(inputPath, outputPath, attribBase) {
 
 async function doToRgd(inputPath, outputPath, attribBase) {
     const rgdParentLoader = makeRgdParentLoader(attribBase);
-    const luaCode = fs.readFileSync(inputPath, 'utf8');
+    const fixed = stripUtf8BomFromFile(inputPath, fs.readFileSync(inputPath));
+    const luaCode = fixed.buffer.toString('utf8');
     const { gameData, version } = await luaToRgdResolved(luaCode, dict, rgdParentLoader);
     writeRgdFile(outputPath, gameData, dict, version);
 }

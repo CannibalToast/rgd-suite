@@ -9,6 +9,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const dist = path.join(__dirname, '..', 'bundled', 'rgd-tools', 'dist');
 
@@ -20,6 +21,15 @@ const { rgdToLua, rgdToLuaDifferential, luaToRgdResolved, parseLuaToTable } = re
 const { hash, hashToHex }             = require(path.join(dist, 'hash.js'));
 const { openSgaArchive }              = require(path.join(dist, 'sga.js'));
 const { RgdDataType }                 = require(path.join(dist, 'types.js'));
+const {
+    validateEncoding,
+    validateFilePath,
+    validateLuaReferences,
+    validateRgdReferences,
+    resolveAttribRefPath,
+    stripUtf8Bom,
+    stripUtf8BomFromFile,
+} = require('./validators');
 
 // ── Argument parsing ─────────────────────────────────────────────────────
 
@@ -42,7 +52,27 @@ function positionals(argv, flagsWithValue) {
     return argv.filter((_, i) => !skip.has(i));
 }
 
-const VALUE_FLAGS = ['-o', '--output', '-a', '--attrib', '-d', '--dictionary', '--version'];
+const VALUE_FLAGS = ['-o', '--output', '-a', '--attrib', '-d', '--dictionary', '--version', '--format', '--workers', '-w'];
+
+function defaultWorkerCount(configured) {
+    const n = parseInt(configured, 10);
+    if (n > 0) return n;
+    return Math.max(1, Math.min(os.cpus().length - 1, 4));
+}
+
+async function scheduleBatched(items, concurrency, fn) {
+    if (!items.length) return;
+    const limit = Math.max(1, concurrency);
+    let next = 0;
+    const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (true) {
+            const i = next++;
+            if (i >= items.length) break;
+            await fn(items[i], i);
+        }
+    });
+    await Promise.all(runners);
+}
 
 // ── Dictionary ───────────────────────────────────────────────────────────
 
@@ -57,6 +87,7 @@ function findDictionaries(extraPaths) {
         process.env.RGD_SUITE_DICT,
         path.join(process.env.LOCALAPPDATA || '', 'RGD Suite', 'dictionaries'),
         path.join(process.env.USERPROFILE || '', '.rgd-tools', 'dictionaries'),
+        path.join(__dirname, '..', 'dictionaries', 'RGD_DIC.TXT'),
         './rgd_dic.txt',
         './dictionaries',
     ];
@@ -101,17 +132,17 @@ function makeLuaFileLoader(attribBase, dict) {
     const cache = new Map();
     return function loader(refPath) {
         if (!attribBase) return null;
-        let clean = refPath.replace(/\\/g, '/');
-        if (clean.endsWith('.lua')) clean = clean.slice(0, -4);
-        const luaPath = path.join(attribBase, clean + '.lua');
+        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
+        if (!luaPath) return null;
         if (cache.has(luaPath)) return cache.get(luaPath);
         if (fs.existsSync(luaPath)) {
-            const c = fs.readFileSync(luaPath, 'utf8');
+            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
+            const c = fixed.buffer.toString('utf8');
             cache.set(luaPath, c);
             return c;
         }
-        const rgdPath = path.join(attribBase, clean + '.rgd');
-        if (fs.existsSync(rgdPath)) {
+        const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
+        if (rgdPath && fs.existsSync(rgdPath)) {
             const c = rgdToLua(readRgdFile(rgdPath, dict));
             cache.set(luaPath, c);
             return c;
@@ -132,13 +163,13 @@ function makeParentLoader(attribBase, dict) {
 function makeRgdParentLoader(attribBase, dict) {
     const self = async (refPath) => {
         if (!attribBase) return null;
-        let clean = refPath.replace(/\\/g, '/');
-        if (clean.endsWith('.lua')) clean = clean.slice(0, -4);
-        const rgdPath = path.join(attribBase, clean + '.rgd');
+        const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
+        if (!rgdPath) return null;
         if (fs.existsSync(rgdPath)) return readRgdFile(rgdPath, dict).gameData;
-        const luaPath = path.join(attribBase, clean + '.lua');
-        if (fs.existsSync(luaPath)) {
-            const code = fs.readFileSync(luaPath, 'utf8');
+        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
+        if (luaPath && fs.existsSync(luaPath)) {
+            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
+            const code = fixed.buffer.toString('utf8');
             const { gameData } = await luaToRgdResolved(code, dict, self);
             return gameData;
         }
@@ -166,6 +197,257 @@ async function collectFiles(folder, ext) {
     return results;
 }
 
+// ── Parity checker helpers ─────────────────────────────────────────────────
+
+const FLOAT_EPSILON = 1e-4;
+
+function flattenRgd(table, prefix, out) {
+    out = out || new Map();
+    prefix = prefix || '';
+    for (const entry of table.entries) {
+        const k = entry.name || ('#' + entry.hash.toString(16).padStart(8, '0'));
+        const full = prefix ? prefix + '.' + k : k;
+        switch (entry.type) {
+            case RgdDataType.Table:
+            case RgdDataType.TableInt:
+                if (entry.value) flattenRgd(entry.value, full, out);
+                break;
+            case RgdDataType.Float:   out.set(full, { type: 'float', value: entry.value }); break;
+            case RgdDataType.Integer: out.set(full, { type: 'int', value: entry.value }); break;
+            case RgdDataType.Bool:    out.set(full, { type: 'bool', value: entry.value }); break;
+            case RgdDataType.String:
+            case RgdDataType.WString:
+                if (k !== '$REF') out.set(full, { type: 'string', value: entry.value });
+                break;
+            case RgdDataType.NoData:  out.set(full, { type: 'nil', value: null }); break;
+        }
+    }
+    return out;
+}
+
+function flattenLua(table, prefix, out) {
+    out = out || new Map();
+    prefix = prefix || '';
+    for (const [key, entry] of table.entries) {
+        const full = prefix ? prefix + '.' + key : key;
+        if (entry.type === 'table' && entry.table) {
+            flattenLua(entry.table, full, out);
+            continue;
+        }
+        const val = entry.value;
+        if (val === null || val === undefined) out.set(full, { type: 'nil', value: null });
+        else if (typeof val === 'boolean') out.set(full, { type: 'bool', value: val });
+        else if (typeof val === 'number') out.set(full, { type: entry.dataType === RgdDataType.Float || !Number.isInteger(val) ? 'float' : 'int', value: val });
+        else if (typeof val === 'string') out.set(full, { type: 'string', value: val });
+    }
+    return out;
+}
+
+function normRef(p) {
+    return String(p || '').replace(/\\/g, '/').toLowerCase().replace(/\.lua$/, '').replace(/^\//, '');
+}
+
+function valuesMatch(a, b) {
+    const numeric = t => t === 'float' || t === 'int';
+    if (numeric(a.type) && numeric(b.type)) return Math.abs(a.value - b.value) <= FLOAT_EPSILON;
+    if (a.type !== b.type) return false;
+    if (a.type === 'ref') return normRef(a.value) === normRef(b.value);
+    if (a.type === 'nil') return true;
+    return a.value === b.value;
+}
+
+function compareFlatMaps(rgdMap, luaMap) {
+    const issues = [];
+    for (const [key, rgdEntry] of rgdMap) {
+        if (key.endsWith('.$ref')) continue;
+        const luaEntry = luaMap.get(key);
+        if (!luaEntry) {
+            issues.push({ kind: 'missing_in_lua', key, details: `RGD: ${JSON.stringify(rgdEntry.value)} (${rgdEntry.type})` });
+        } else if (!valuesMatch(rgdEntry, luaEntry)) {
+            const numeric = t => t === 'float' || t === 'int';
+            if (rgdEntry.type !== luaEntry.type && !numeric(rgdEntry.type) && !numeric(luaEntry.type)) {
+                issues.push({ kind: 'type_mismatch', key, details: `RGD=${rgdEntry.type}, Lua=${luaEntry.type}` });
+            } else {
+                issues.push({ kind: 'value_mismatch', key, details: `RGD=${JSON.stringify(rgdEntry.value)}, Lua=${JSON.stringify(luaEntry.value)}` });
+            }
+        }
+    }
+    for (const [key, luaEntry] of luaMap) {
+        if (key.endsWith('.$ref') || luaEntry.type === 'nil') continue;
+        if (!rgdMap.has(key)) {
+            issues.push({ kind: 'missing_in_rgd', key, details: `Lua: ${JSON.stringify(luaEntry.value)} (${luaEntry.type})` });
+        }
+    }
+    return issues;
+}
+
+function resolvePair(input) {
+    if (/\.rgd$/i.test(input)) return { rgd: input, lua: input.replace(/\.rgd$/i, '.lua') };
+    if (/\.lua$/i.test(input)) return { rgd: input.replace(/\.lua$/i, '.rgd'), lua: input };
+    throw new Error('Select a .rgd or .lua file');
+}
+
+function maybeStripBom(filePath, buffer, fixes) {
+    const fixed = stripUtf8BomFromFile(filePath, buffer);
+    if (fixed.fixed) {
+        fixes.push({
+            kind: 'bom_stripped',
+            severity: 'info',
+            path: filePath,
+            details: 'Removed UTF-8 BOM',
+        });
+    }
+    return fixed.buffer;
+}
+
+function checkParityPair(rgdPath, luaPath, dict, attribBaseOverride) {
+    const attribBase = attribBaseOverride || findAttribBase(rgdPath) || findAttribBase(luaPath);
+    const validationIssues = [];
+    const fixes = [];
+    validationIssues.push(...validateFilePath(attribBase ? path.relative(attribBase, rgdPath) : rgdPath));
+    validationIssues.push(...validateFilePath(attribBase ? path.relative(attribBase, luaPath) : luaPath));
+
+    const rgdFile = readRgdFile(rgdPath, dict);
+    const rgdMap = flattenRgd(rgdFile.gameData);
+
+    const luaBuf = maybeStripBom(luaPath, fs.readFileSync(luaPath), fixes);
+    validationIssues.push(...validateEncoding(luaBuf, luaPath).issues);
+    const luaLoader = makeLuaFileLoader(attribBase, dict);
+    const luaCode = stripUtf8Bom(luaBuf.toString('utf8'));
+    const luaTable = parseLuaToTable(luaCode, luaLoader);
+    const luaMap = flattenLua(luaTable);
+
+    validationIssues.push(...validateRgdReferences(rgdFile.gameData, attribBase));
+    validationIssues.push(...validateLuaReferences(luaTable, attribBase));
+
+    const issues = compareFlatMaps(rgdMap, luaMap);
+    return {
+        rgdFile: rgdPath,
+        luaFile: luaPath,
+        totalKeys: rgdMap.size,
+        issues,
+        validationIssues,
+        fixes,
+        attribResolved: !!attribBase,
+    };
+}
+
+function summarizeParity(results, skipped) {
+    const failed = results.filter(r => r.error || r.issues.length > 0 || r.validationIssues.length > 0).length;
+    const errored = results.filter(r => r.error).length;
+    const validationIssues = results.reduce((n, r) => n + (r.validationIssues?.length || 0), 0);
+    const parityIssues = results.reduce((n, r) => n + (r.issues?.length || 0), 0);
+    const fixes = results.reduce((n, r) => n + (r.fixes?.length || 0), 0);
+    return {
+        checked: results.length,
+        passed: results.length - failed,
+        failed,
+        errored,
+        skipped: skipped || 0,
+        parityIssues,
+        validationIssues,
+        fixes,
+    };
+}
+
+function printParity(results, skipped, format, label) {
+    const summary = summarizeParity(results, skipped);
+    const payload = { ok: summary.failed === 0 && summary.errored === 0, label, summary, results };
+    if (format === 'json') {
+        console.log(JSON.stringify(payload, null, 2));
+    } else {
+        console.log(`${label || 'Parity'}: ${summary.checked} checked | ${summary.passed} pass | ${summary.failed} fail | ${summary.errored} error | ${summary.skipped} skipped | ${summary.parityIssues + summary.validationIssues} total issues | ${summary.fixes} fixes`);
+        for (const result of results) {
+            const issueCount = (result.issues?.length || 0) + (result.validationIssues?.length || 0);
+            console.log(`[${issueCount === 0 && !result.error ? 'PASS' : 'FAIL'}] ${result.rgdFile} ↔ ${result.luaFile || '(missing lua)'} (${issueCount} issues)`);
+            if (result.error) console.log(`  ERROR: ${result.error}`);
+            for (const fix of result.fixes || []) console.log(`  FIXED ${fix.kind} ${fix.path}: ${fix.details}`);
+            for (const issue of result.issues || []) console.log(`  ${issue.kind} ${issue.key}: ${issue.details}`);
+            for (const issue of result.validationIssues || []) console.log(`  ${issue.kind} ${issue.key || issue.path}: ${issue.details}`);
+        }
+    }
+    if (!payload.ok) process.exitCode = 1;
+}
+
+async function validateOneFile(filePath, dict, attribBaseOverride) {
+    const attribBase = attribBaseOverride || findAttribBase(filePath);
+    const validationIssues = [];
+    const fixes = [];
+    const lower = filePath.toLowerCase();
+    try {
+        if (lower.endsWith('.lua') || lower.endsWith('.txt')) {
+            const buf = maybeStripBom(filePath, fs.readFileSync(filePath), fixes);
+            validationIssues.push(...validateEncoding(buf, filePath).issues);
+            if (lower.endsWith('.lua')) {
+                const luaLoader = makeLuaFileLoader(attribBase, dict);
+                const table = parseLuaToTable(stripUtf8Bom(buf.toString('utf8')), luaLoader);
+                validationIssues.push(...validateLuaReferences(table, attribBase));
+            }
+        } else if (lower.endsWith('.rgd')) {
+            const rgd = readRgdFile(filePath, dict);
+            validationIssues.push(...validateRgdReferences(rgd.gameData, attribBase));
+        }
+        return {
+            file: filePath,
+            validationIssues,
+            fixes,
+            attribResolved: !!attribBase,
+        };
+    } catch (err) {
+        return {
+            file: filePath,
+            validationIssues,
+            fixes,
+            attribResolved: !!attribBase,
+            error: err.message,
+        };
+    }
+}
+
+async function validateTarget(target, dict, attribBase, format) {
+    const resolved = path.resolve(target);
+    const stat = fs.statSync(resolved);
+    const files = stat.isDirectory()
+        ? [
+            ...(await collectFiles(resolved, '.lua')),
+            ...(await collectFiles(resolved, '.rgd')),
+            ...(await collectFiles(resolved, '.rgd.txt')),
+        ]
+        : [resolved];
+    const results = [];
+    for (const file of files) results.push(await validateOneFile(file, dict, attribBase));
+    const validationIssues = results.reduce((n, r) => n + (r.validationIssues?.length || 0), 0);
+    const fixes = results.reduce((n, r) => n + (r.fixes?.length || 0), 0);
+    const errored = results.filter(r => r.error).length;
+    const failed = results.filter(r => r.error || (r.validationIssues?.length || 0) > 0).length;
+    const payload = {
+        ok: failed === 0 && errored === 0,
+        label: path.basename(resolved),
+        summary: {
+            checked: results.length,
+            passed: results.length - failed,
+            failed,
+            errored,
+            validationIssues,
+            fixes,
+        },
+        results,
+    };
+    if (format === 'json') {
+        console.log(JSON.stringify(payload, null, 2));
+    } else {
+        console.log(`Validation: ${payload.summary.checked} checked | ${payload.summary.passed} pass | ${failed} fail | ${errored} error | ${validationIssues} issues | ${fixes} fixes`);
+        for (const result of results) {
+            const count = (result.validationIssues?.length || 0) + (result.error ? 1 : 0);
+            console.log(`[${count === 0 ? 'PASS' : 'FAIL'}] ${result.file} (${count} issues)`);
+            if (result.error) console.log(`  ERROR: ${result.error}`);
+            for (const fix of result.fixes || []) console.log(`  FIXED ${fix.kind} ${fix.path}: ${fix.details}`);
+            for (const issue of result.validationIssues || []) console.log(`  ${issue.kind} ${issue.key || issue.path}: ${issue.details}`);
+        }
+    }
+    if (!payload.ok) process.exitCode = 1;
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────
 
 const COMMANDS = {
@@ -184,7 +466,7 @@ const COMMANDS = {
         const [input] = positionals(argv, VALUE_FLAGS);
         if (!input) usage('from-text <input.rgd.txt> [-o output.rgd] [--version 1|3]');
         const dict = getDict(argv);
-        const text = await fs.promises.readFile(input, 'utf8');
+        const text = maybeStripBom(input, await fs.promises.readFile(input), []).toString('utf8');
         const { gameData, version } = textToRgd(text, dict);
         // Special-case: foo.rgd.txt -> foo.rgd, otherwise strip .txt or append .rgd
         let defaultOut = input;
@@ -215,7 +497,7 @@ const COMMANDS = {
         const [input] = positionals(argv, VALUE_FLAGS);
         if (!input) usage('from-lua <input.lua> [-o output.rgd] [-a attribBase] [--version 1|3]');
         const dict = getDict(argv);
-        const code = await fs.promises.readFile(input, 'utf8');
+        const code = maybeStripBom(input, await fs.promises.readFile(input), []).toString('utf8');
         const attribBase = getOpt(argv, ['-a', '--attrib'], findAttribBase(input));
         const rgdParent = makeRgdParentLoader(attribBase, dict);
         const { gameData, version } = await luaToRgdResolved(code, dict, rgdParent);
@@ -274,53 +556,117 @@ const COMMANDS = {
         console.log(JSON.stringify({ archive: input, extracted: extracted.length, files: extracted }, null, 2));
     },
 
+    async 'parity'(argv) {
+        const [input] = positionals(argv, VALUE_FLAGS);
+        if (!input) usage('parity <input.rgd|input.lua> [--format json|text] [-a attribBase]');
+        const format = getOpt(argv, ['--format'], 'text');
+        const dict = getDict(argv);
+        const attribBase = getOpt(argv, ['-a', '--attrib'], null);
+        const pair = resolvePair(path.resolve(input));
+        if (!fs.existsSync(pair.rgd)) throw new Error('RGD not found: ' + pair.rgd);
+        if (!fs.existsSync(pair.lua)) throw new Error('Lua not found: ' + pair.lua);
+        const result = checkParityPair(pair.rgd, pair.lua, dict, attribBase);
+        printParity([result], 0, format, path.basename(pair.rgd));
+    },
+
+    async 'parity-batch'(argv) {
+        const [folder] = positionals(argv, VALUE_FLAGS);
+        if (!folder) usage('parity-batch <folder> [--format json|text] [-a attribBase] [--workers N]');
+        const format = getOpt(argv, ['--format'], 'text');
+        const dict = getDict(argv);
+        const root = path.resolve(folder);
+        const attribBase = getOpt(argv, ['-a', '--attrib'], null) || findAttribBase(root);
+        const workers = defaultWorkerCount(getOpt(argv, ['--workers', '-w'], '0'));
+        const rgdFiles = await collectFiles(root, '.rgd');
+        const jobs = [];
+        let skipped = 0;
+        for (const rgdPath of rgdFiles) {
+            const luaPath = rgdPath.replace(/\.rgd$/i, '.lua');
+            if (!fs.existsSync(luaPath)) {
+                skipped++;
+                continue;
+            }
+            jobs.push({ rgdPath, luaPath });
+        }
+        const results = [];
+        await scheduleBatched(jobs, workers, async ({ rgdPath, luaPath }) => {
+            try {
+                results.push(checkParityPair(rgdPath, luaPath, dict, attribBase));
+            } catch (err) {
+                results.push({
+                    rgdFile: rgdPath,
+                    luaFile: luaPath,
+                    totalKeys: 0,
+                    issues: [],
+                    validationIssues: [],
+                    attribResolved: !!attribBase,
+                    error: err.message,
+                });
+            }
+        });
+        printParity(results, skipped, format, path.basename(root));
+    },
+
+    async 'validate'(argv) {
+        const [target] = positionals(argv, VALUE_FLAGS);
+        if (!target) usage('validate <file|folder> [--format json|text] [-a attribBase]');
+        const format = getOpt(argv, ['--format'], 'text');
+        const dict = getDict(argv);
+        const attribBase = getOpt(argv, ['-a', '--attrib'], null);
+        await validateTarget(target, dict, attribBase, format);
+    },
+
     async 'batch-to-lua'(argv) {
         const [folder] = positionals(argv, VALUE_FLAGS);
-        if (!folder) usage('batch-to-lua <folder> [-a attribBase]');
+        if (!folder) usage('batch-to-lua <folder> [-a attribBase] [--workers N]');
         const dict = getDict(argv);
         const attribBase = getOpt(argv, ['-a', '--attrib'], null) || findAttribBase(path.resolve(folder));
+        const workers = defaultWorkerCount(getOpt(argv, ['--workers', '-w'], '0'));
         const parentLoader = makeParentLoader(attribBase, dict);
         const files = await collectFiles(path.resolve(folder), '.rgd');
-        const results = [];
-        for (const full of files) {
+        const results = new Array(files.length);
+        await scheduleBatched(files, workers, async (full, index) => {
             try {
                 const rgd = readRgdFile(full, dict);
                 const lua = await rgdToLuaDifferential(rgd, parentLoader);
                 const out = full.replace(/\.rgd$/i, '.lua');
                 await fs.promises.writeFile(out, lua, 'utf8');
-                results.push({ input: full, output: out, ok: true });
+                results[index] = { input: full, output: out, ok: true };
             } catch (err) {
-                results.push({ input: full, error: err.message, ok: false });
+                results[index] = { input: full, error: err.message, ok: false };
             }
-        }
-        const ok = results.filter(r => r.ok).length;
+        });
+        const settled = results.filter(Boolean);
+        const ok = settled.filter(r => r.ok).length;
         console.log(JSON.stringify({
-            folder, attribBase, processed: results.length, succeeded: ok, failed: results.length - ok, results
+            folder, attribBase, workers, processed: settled.length, succeeded: ok, failed: settled.length - ok, results: settled
         }, null, 2));
     },
 
     async 'batch-to-rgd'(argv) {
         const [folder] = positionals(argv, VALUE_FLAGS);
-        if (!folder) usage('batch-to-rgd <folder> [-a attribBase]');
+        if (!folder) usage('batch-to-rgd <folder> [-a attribBase] [--workers N]');
         const dict = getDict(argv);
         const attribBase = getOpt(argv, ['-a', '--attrib'], null) || findAttribBase(path.resolve(folder));
+        const workers = defaultWorkerCount(getOpt(argv, ['--workers', '-w'], '0'));
         const rgdParent = makeRgdParentLoader(attribBase, dict);
         const files = await collectFiles(path.resolve(folder), '.lua');
-        const results = [];
-        for (const full of files) {
+        const results = new Array(files.length);
+        await scheduleBatched(files, workers, async (full, index) => {
             try {
-                const code = await fs.promises.readFile(full, 'utf8');
+                const code = maybeStripBom(full, await fs.promises.readFile(full), []).toString('utf8');
                 const { gameData, version } = await luaToRgdResolved(code, dict, rgdParent);
                 const out = full.replace(/\.lua$/i, '.rgd');
                 writeRgdFile(out, gameData, dict, version);
-                results.push({ input: full, output: out, ok: true });
+                results[index] = { input: full, output: out, ok: true };
             } catch (err) {
-                results.push({ input: full, error: err.message, ok: false });
+                results[index] = { input: full, error: err.message, ok: false };
             }
-        }
-        const ok = results.filter(r => r.ok).length;
+        });
+        const settled = results.filter(Boolean);
+        const ok = settled.filter(r => r.ok).length;
         console.log(JSON.stringify({
-            folder, attribBase, processed: results.length, succeeded: ok, failed: results.length - ok, results
+            folder, attribBase, workers, processed: settled.length, succeeded: ok, failed: settled.length - ok, results: settled
         }, null, 2));
     },
 
@@ -337,11 +683,16 @@ Commands:
   info         <input.rgd>                              Show RGD file info (JSON)
   hash         <string>                                 Calculate RGD hash (JSON)
   extract-sga  <archive.sga> <outputFolder>             Extract RGDs from SGA
-  batch-to-lua <folder> [-a base]                       Batch convert folder
-  batch-to-rgd <folder> [-a base]                       Batch compile folder
+  validate     <file|folder> [--format json] [-a base]   Validate paths, BOMs, references
+  parity       <input.rgd|input.lua> [--format json]     Check RGD/Lua parity
+  parity-batch <folder> [--format json] [-a base] [--workers N]  Batch parity check
+  batch-to-lua <folder> [-a base] [--workers N]                  Batch convert folder
+  batch-to-rgd <folder> [-a base] [--workers N]                  Batch compile folder
 
 Global options:
   -d, --dictionary <paths>  Colon-separated dictionary paths
+  --workers, -w <N>         Concurrent jobs for batch commands (0 = auto, cap 4)
+  --format <json|text>      Output format for parity commands
   --version <1|3>           RGD version for from-text / from-lua
 
 Environment:

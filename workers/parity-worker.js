@@ -13,6 +13,15 @@ const { createAndLoadDictionaries }          = require(path.join(dist, 'dictiona
 const { parseRgd }                           = require(path.join(dist, 'reader.js'));
 const { parseLuaToTable, rgdToLua }          = require(path.join(dist, 'luaFormat.js'));
 const { RgdDataType }                        = require(path.join(dist, 'types.js'));
+const {
+    validateEncoding,
+    validateLuaReferences,
+    validateRgdReferences,
+    resolveAttribRefPath,
+    stripUtf8Bom,
+    stripUtf8BomFromFile,
+    isNilReference,
+} = require(path.join(__dirname, '..', 'cli', 'validators.js'));
 
 // Load dictionary once per worker
 const dict = createAndLoadDictionaries(workerData.dictPaths || []);
@@ -69,9 +78,8 @@ function rememberFileCache(cache, key, value) {
 function makeLuaFileLoader(attribBase, cache) {
     return function loader(refPath) {
         if (!attribBase) return null;
-        let clean = refPath.replace(/\\/g, '/');
-        if (clean.endsWith('.lua')) clean = clean.slice(0, -4);
-        const luaPath = path.join(attribBase, clean + '.lua');
+        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
+        if (!luaPath) return null;
         if (cache.has(luaPath)) {
             const v = cache.get(luaPath);
             cache.delete(luaPath);
@@ -79,12 +87,13 @@ function makeLuaFileLoader(attribBase, cache) {
             return v;
         }
         if (fs.existsSync(luaPath)) {
-            const c = fs.readFileSync(luaPath, 'utf8');
+            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
+            const c = fixed.buffer.toString('utf8');
             rememberFileCache(cache, luaPath, c);
             return c;
         }
-        const rgdPath = path.join(attribBase, clean + '.rgd');
-        if (fs.existsSync(rgdPath)) {
+        const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
+        if (rgdPath && fs.existsSync(rgdPath)) {
             const c = rgdToLua(parseRgd(fs.readFileSync(rgdPath), dict));
             rememberFileCache(cache, luaPath, c);
             return c;
@@ -156,6 +165,7 @@ function collectMissingRefs(luaTable, attribBase, prefix) {
     for (const [key, entry] of luaTable.entries) {
         const full = prefix ? prefix + '.' + key : key;
         if (entry.type === 'table' && entry.reference && attribBase) {
+            if (isNilReference(entry.reference)) continue;
             let ref = entry.reference.replace(/\\/g, '/');
             if (!ref.endsWith('.lua')) ref += '.lua';
             if (!fs.existsSync(path.join(attribBase, ref)))
@@ -171,14 +181,22 @@ function checkParity(rgdPath, luaPath, fileCache) {
     const attribBase = findAttribBase(rgdPath) || findAttribBase(luaPath);
     const luaLoader  = makeLuaFileLoader(attribBase, fileCache);
     const issues     = [];
+    const validationIssues = [];
+    const fixes = [];
 
     const rgdFile = parseRgd(fs.readFileSync(rgdPath), dict);
     const rgdMap  = flattenRgd(rgdFile.gameData);
 
-    const luaTable = parseLuaToTable(fs.readFileSync(luaPath, 'utf8'), luaLoader);
+    const bomResult = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
+    if (bomResult.fix) fixes.push(bomResult.fix);
+    const luaBuf = bomResult.buffer;
+    validationIssues.push(...validateEncoding(luaBuf, luaPath).issues);
+    const luaTable = parseLuaToTable(stripUtf8Bom(luaBuf.toString('utf8')), luaLoader);
     const luaMap   = flattenLua(luaTable);
 
     issues.push(...collectMissingRefs(luaTable, attribBase));
+    validationIssues.push(...validateRgdReferences(rgdFile.gameData, attribBase));
+    validationIssues.push(...validateLuaReferences(luaTable, attribBase));
 
     for (const [key, re] of rgdMap) {
         if (key.endsWith('.$ref')) continue;
@@ -200,7 +218,7 @@ function checkParity(rgdPath, luaPath, fileCache) {
             issues.push({ kind: 'missing_in_rgd', key, details: 'Lua: ' + JSON.stringify(le.value) + ' (' + le.type + ')' });
     }
 
-    return { rgdFile: rgdPath, luaFile: luaPath, totalKeys: rgdMap.size, issues, attribResolved: !!attribBase };
+    return { rgdFile: rgdPath, luaFile: luaPath, totalKeys: rgdMap.size, issues, validationIssues, fixes, attribResolved: !!attribBase };
 }
 
 // ── Message loop ───────────────────────────────────────────────────────────

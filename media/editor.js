@@ -83,11 +83,46 @@
             rgdData = msg.data;
             renderTree(rgdData);
             updateStatus('Loaded ' + (rgdData ? rgdData.length : 0) + ' nodes');
+        } else if (msg.type === 'loadChildren') {
+            mergeChildren(rgdData, msg.path, msg.children);
+            const pathKey = msg.path.join('.');
+            const nodeEl = document.querySelector('[data-path="' + pathKey + '"]');
+            if (nodeEl) {
+                const parent = nodeEl.closest('.tree-node');
+                const parentData = getNodeAtPath(rgdData, msg.path);
+                if (parent && parentData) {
+                    fillChildren(parent, parentData, msg.path, parent.querySelector('.tree-children'), msg.path.length);
+                }
+            }
         } else if (msg.type === 'saved') {
             isDirty = false;
             updateStatus('Saved');
         }
     });
+
+    function mergeChildren(nodes, nodePath, children) {
+        const parent = getNodeAtPath(nodes, nodePath);
+        if (parent) parent.children = children;
+    }
+
+    function getNodeAtPath(nodes, nodePath) {
+        let list = nodes;
+        let current = null;
+        for (let i = 0; i < nodePath.length; i++) {
+            current = list[nodePath[i]];
+            if (!current) return null;
+            if (current.children) list = current.children;
+        }
+        return current;
+    }
+
+    function fillChildren(nodeEl, node, path, childrenDiv, depth) {
+        if (!childrenDiv || !node.children) return;
+        childrenDiv.innerHTML = '';
+        node.children.forEach(function (child, idx) {
+            childrenDiv.appendChild(createTreeNode(child, path.concat([idx]), depth + 1));
+        });
+    }
 
     function renderTree(nodes) {
         nodeRegistry.clear();
@@ -115,7 +150,8 @@
         const div = document.createElement('div');
         div.className = 'tree-node';
 
-        const hasChildren = node.children && node.children.length > 0;
+        const hasChildren = node.hasChildren || (node.children && node.children.length > 0);
+        const childCount = node.childCount != null ? node.childCount : (node.children ? node.children.length : 0);
         const nodeName = node.key || node.name || 'Unknown';
         const isRefNode = nodeName === '$REF';
 
@@ -147,10 +183,10 @@
         }
         row.appendChild(label);
 
-        if (hasChildren) {
+        if (hasChildren && childCount > 0) {
             const badge = document.createElement('span');
             badge.className = 'tree-badge';
-            badge.textContent = node.children.length;
+            badge.textContent = childCount;
             row.appendChild(badge);
         }
 
@@ -197,12 +233,12 @@
             toggle.classList.remove('expanded');
             toggle.classList.add('collapsed');
         } else {
-            if (childrenDiv.children.length === 0 && node.children) {
-                node.children.forEach(function (child, idx) {
-                    const childPath = path.concat([idx]);
-                    const childEl = createTreeNode(child, childPath, depth + 1);
-                    childrenDiv.appendChild(childEl);
-                });
+            if (childrenDiv.children.length === 0) {
+                if (node.children && node.children.length > 0) {
+                    fillChildren(nodeEl, node, path, childrenDiv, depth);
+                } else if (node.hasChildren) {
+                    vscode.postMessage({ type: 'requestChildren', path: path });
+                }
             }
             childrenDiv.classList.add('expanded');
             toggle.classList.remove('collapsed');
@@ -396,20 +432,36 @@
     }
 
     function expandNodeDeep(nodeEl, nodeData, nodePath, depth) {
-        if (!nodeData || !nodeData.children || nodeData.children.length === 0) return;
+        if (!nodeData) return;
+        const hasKids = nodeData.hasChildren || (nodeData.children && nodeData.children.length > 0);
+        if (!hasKids) return;
         const childrenDiv = nodeEl.querySelector(':scope > .tree-children');
         if (!childrenDiv) return;
         const toggle = nodeEl.querySelector(':scope > .tree-row > .tree-toggle');
         if (childrenDiv.children.length === 0) {
-            nodeData.children.forEach(function (child, idx) {
-                childrenDiv.appendChild(createTreeNode(child, nodePath.concat([idx]), depth + 1));
-            });
+            if (nodeData.children && nodeData.children.length > 0) {
+                fillChildren(nodeEl, nodeData, nodePath, childrenDiv, depth);
+            } else if (nodeData.hasChildren) {
+                vscode.postMessage({ type: 'requestChildren', path: nodePath });
+                return;
+            }
         }
         childrenDiv.classList.add('expanded');
         if (toggle) { toggle.classList.remove('collapsed'); toggle.classList.add('expanded'); }
-        Array.from(childrenDiv.children).forEach(function (childEl, idx) {
-            expandNodeDeep(childEl, nodeData.children[idx], nodePath.concat([idx]), depth + 1);
-        });
+        const kids = nodeData.children;
+        if (!kids || !kids.length) return;
+        let idx = 0;
+        function expandNextBatch() {
+            const end = Math.min(idx + 24, kids.length);
+            for (; idx < end; idx++) {
+                const childEl = childrenDiv.children[idx];
+                if (childEl) {
+                    expandNodeDeep(childEl, kids[idx], nodePath.concat([idx]), depth + 1);
+                }
+            }
+            if (idx < kids.length) requestAnimationFrame(expandNextBatch);
+        }
+        requestAnimationFrame(expandNextBatch);
     }
 
     function esc(text) {

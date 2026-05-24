@@ -13,6 +13,7 @@ import {
 import { RgdTable } from "../bundled/rgd-tools/dist/types";
 import { HashDictionary } from "../bundled/rgd-tools/dist/dictionary";
 import { safeJoin } from "./pathUtils";
+import { isNilReference, stripUtf8BomFromFile } from "./validators";
 
 // Memoize attrib-root discovery by normalized file path. Attrib roots rarely
 // change during a session and the lookup is called per file open / per tree
@@ -72,14 +73,15 @@ export function makeLuaFileLoader(
   cache = new Map<string, string | null>(),
 ): LuaFileLoader {
   return (refPath: string): string | null => {
-    if (!attribBase) return null;
-    let clean = refPath.replace(/\\/g, "/");
-    if (clean.endsWith(".lua")) clean = clean.slice(0, -4);
+    if (!attribBase || isNilReference(refPath)) return null;
+    const clean = refPath.replace(/\\/g, "/").replace(/\.(lua|rgd|nil)$/i, "");
     const luaPath = safeJoin(attribBase, clean + ".lua");
     if (!luaPath) return null;
     if (cache.has(luaPath)) return cache.get(luaPath) ?? null;
     if (fs.existsSync(luaPath)) {
-      const content = fs.readFileSync(luaPath, "utf8");
+      const content = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath)).buffer.toString(
+        "utf8",
+      );
       cache.set(luaPath, content);
       return content;
     }
@@ -117,9 +119,8 @@ export function makeRgdParentLoader(
   const self: RgdParentLoader = async (
     refPath: string,
   ): Promise<RgdTable | null> => {
-    if (!attribBase) return null;
-    let clean = refPath.replace(/\\/g, "/");
-    if (clean.endsWith(".lua")) clean = clean.slice(0, -4);
+    if (!attribBase || isNilReference(refPath)) return null;
+    const clean = refPath.replace(/\\/g, "/").replace(/\.(lua|rgd|nil)$/i, "");
     const rgdPath = safeJoin(attribBase, clean + ".rgd");
     if (rgdPath && fs.existsSync(rgdPath)) {
       const data = parseRgd(fs.readFileSync(rgdPath), dict);
@@ -127,7 +128,10 @@ export function makeRgdParentLoader(
     }
     const luaPath = safeJoin(attribBase, clean + ".lua");
     if (luaPath && fs.existsSync(luaPath)) {
-      const parentLua = fs.readFileSync(luaPath, "utf8");
+      const parentLua = stripUtf8BomFromFile(
+        luaPath,
+        fs.readFileSync(luaPath),
+      ).buffer.toString("utf8");
       const { gameData } = await luaToRgdResolved(parentLua, dict, self);
       return gameData;
     }
@@ -183,14 +187,21 @@ export function collectFiles(folder: string, ext: string): string[] {
 
 // Async walker that doesn't block the extension host. Yields control between
 // directories so large trees don't stall the UI.
+const COLLECT_YIELD_EVERY_DIRS = 32;
+
 export async function collectFilesAsync(
   folder: string,
   ext: string,
 ): Promise<string[]> {
   const results: string[] = [];
   const stack: string[] = [folder];
+  let dirsVisited = 0;
   while (stack.length) {
     const dir = stack.pop()!;
+    dirsVisited++;
+    if (dirsVisited % COLLECT_YIELD_EVERY_DIRS === 0) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
     let entries: fs.Dirent[];
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true });
@@ -202,6 +213,44 @@ export async function collectFilesAsync(
       if (e.isDirectory()) stack.push(full);
       else if (e.isFile() && e.name.toLowerCase().endsWith(ext))
         results.push(full);
+    }
+  }
+  return results;
+}
+
+/** One directory walk collecting .lua, .rgd, and .rgd.txt files. */
+export async function collectValidateFilesAsync(
+  folder: string,
+): Promise<string[]> {
+  const results: string[] = [];
+  const stack: string[] = [folder];
+  let dirsVisited = 0;
+  while (stack.length) {
+    const dir = stack.pop()!;
+    dirsVisited++;
+    if (dirsVisited % COLLECT_YIELD_EVERY_DIRS === 0) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        stack.push(full);
+      } else if (e.isFile()) {
+        const lower = e.name.toLowerCase();
+        if (
+          lower.endsWith(".lua") ||
+          lower.endsWith(".rgd") ||
+          lower.endsWith(".rgd.txt")
+        ) {
+          results.push(full);
+        }
+      }
     }
   }
   return results;

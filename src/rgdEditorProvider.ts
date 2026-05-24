@@ -1,13 +1,44 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import { parseRgd } from "../bundled/rgd-tools/dist/reader";
-import { rgdToTree, treeToRgd, RgdNode } from "./rgdTable";
+import { treeToRgd, RgdNode } from "./rgdTable";
 import { writeRgdFile } from "../bundled/rgd-tools/dist/writer";
 import { DictionaryManager } from "./dictionaryManager";
-import { LocaleManager } from "./localeManager";
 import { findAttribBase } from "./attribUtils";
 import { getErrorMessage } from "./errorUtils";
+import {
+  getTreeNodes,
+  invalidateParsedRgdCache,
+} from "./parsedRgdCache";
+
+function shallowTreePayload(nodes: RgdNode[]): Record<string, unknown>[] {
+  return nodes.map((n) => ({
+    key: n.key,
+    hash: n.hash,
+    type: n.type,
+    value: n.value,
+    ref: n.ref,
+    resolvedPath: n.resolvedPath,
+    resolvedExists: n.resolvedExists,
+    localeId: n.localeId,
+    localeText: n.localeText,
+    localeFile: n.localeFile,
+    localeLine: n.localeLine,
+    hasChildren: !!(n.children && n.children.length > 0),
+    childCount: n.children?.length ?? 0,
+  }));
+}
+
+function nodeAtPath(nodes: RgdNode[], nodePath: number[]): RgdNode | undefined {
+  let list = nodes;
+  let current: RgdNode | undefined;
+  for (const idx of nodePath) {
+    current = list[idx];
+    if (!current) return undefined;
+    if (current.children) list = current.children;
+  }
+  return current;
+}
 
 interface WebviewMessage {
   type: string;
@@ -54,17 +85,14 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
     };
 
     try {
-      const buffer = await fs.promises.readFile(document.uri.fsPath);
       const dict = this.dictionaryManager.getDictionary(this.context);
-      const rgd = parseRgd(buffer, dict);
-
+      const { nodes, rgd } = await getTreeNodes(document.uri.fsPath, dict, {
+        resolvePaths: false,
+      });
       const attribRoot = findAttribBase(document.uri.fsPath) ?? undefined;
 
       document.rgdVersion = rgd.header.version;
-      const localeMap = LocaleManager.getInstance().getLocaleMap(
-        document.uri.fsPath,
-      );
-      document.nodes = rgdToTree(rgd.gameData, attribRoot, localeMap);
+      document.nodes = nodes;
 
       webviewPanel.webview.html = this._getHtml(
         webviewPanel.webview,
@@ -78,9 +106,21 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
             case "ready":
               webviewPanel.webview.postMessage({
                 type: "loadData",
-                data: document.nodes,
+                data: shallowTreePayload(document.nodes),
               });
               break;
+
+            case "requestChildren": {
+              const nodePath = message.path as number[] | undefined;
+              if (!nodePath) break;
+              const parent = nodeAtPath(document.nodes, nodePath);
+              webviewPanel.webview.postMessage({
+                type: "loadChildren",
+                path: nodePath,
+                children: shallowTreePayload(parent?.children ?? []),
+              });
+              break;
+            }
 
             case "openRef":
               if (message.ref) {
@@ -128,25 +168,22 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
             case "save":
               try {
                 await this._saveRgd(document);
-                const reloadBuffer = await fs.promises.readFile(
-                  document.uri.fsPath,
-                );
+                invalidateParsedRgdCache(document.uri.fsPath);
                 const reloadDict = this.dictionaryManager.getDictionary(
                   this.context,
                 );
-                const reloadRgd = parseRgd(reloadBuffer, reloadDict);
-                const reloadLocaleMap =
-                  LocaleManager.getInstance().getLocaleMap(document.uri.fsPath);
-                document.nodes = rgdToTree(
-                  reloadRgd.gameData,
-                  attribRoot,
-                  reloadLocaleMap,
+                const reloaded = await getTreeNodes(
+                  document.uri.fsPath,
+                  reloadDict,
+                  { resolvePaths: false },
                 );
+                document.nodes = reloaded.nodes;
+                document.rgdVersion = reloaded.rgd.header.version;
                 document.isDirty = false;
                 webviewPanel.webview.postMessage({ type: "saved" });
                 webviewPanel.webview.postMessage({
                   type: "loadData",
-                  data: document.nodes,
+                  data: shallowTreePayload(document.nodes),
                 });
                 vscode.window.showInformationMessage("RGD saved and reloaded");
               } catch (saveError) {
@@ -277,6 +314,7 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
     }
     try {
       writeRgdFile(document.uri.fsPath, rgdTable, dict, document.rgdVersion);
+      invalidateParsedRgdCache(document.uri.fsPath);
     } catch (writeError) {
       if (fs.existsSync(backupPath)) {
         fs.copyFileSync(backupPath, document.uri.fsPath);

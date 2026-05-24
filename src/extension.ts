@@ -8,37 +8,48 @@ import { DictionaryManager } from "./dictionaryManager";
 import { LocaleManager } from "./localeManager";
 import { RgdEditorProvider } from "./rgdEditorProvider";
 import { registerRgdTreeView } from "./rgdTreeView";
-import { registerCliCommands } from "./cliCommands";
-import { registerParityCommands } from "./parityChecker";
 import { findAttribBase } from "./attribUtils";
 import { getErrorMessage } from "./errorUtils";
 import { sanitizeUserPath } from "./pathUtils";
+import { isNilReference } from "./validators";
+import { configureParsedRgdCacheLimits } from "./parsedRgdCache";
+
+function applyCacheSettings(): void {
+  const suite = vscode.workspace.getConfiguration("rgdSuite");
+  configureParsedRgdCacheLimits(
+    suite.get<number>("vfsCacheSize", 50),
+    suite.get<number>("treeCacheSize", 30),
+  );
+}
 
 export function activate(context: vscode.ExtensionContext) {
-  console.log("RGD Suite v1.2.0 is now active");
+  console.log(
+    `RGD Suite v${context.extension.packageJSON.version ?? "unknown"} is now active`,
+  );
 
-  // Initialize dictionary early — shared by all sub-systems
-  DictionaryManager.getInstance().getDictionary(context);
-
-  // Register the virtual file system (rgd:// scheme)
-  const fsProvider = registerRgdFileSystem(context);
-
-  // Register link provider for clickable paths in rgd-text files
-  registerRgdLinkProvider(context);
-
-  // Refresh dictionary when configuration changes
+  applyCacheSettings();
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("rgdEditor.dictionaryPaths")) {
+      if (
+        e.affectsConfiguration("rgdEditor.dictionaryPaths")
+      ) {
         console.log(
           "[RGD Suite] Dictionary configuration changed, refreshing...",
         );
         DictionaryManager.getInstance().refresh(context);
       }
+      if (
+        e.affectsConfiguration("rgdSuite.vfsCacheSize") ||
+        e.affectsConfiguration("rgdSuite.treeCacheSize")
+      ) {
+        applyCacheSettings();
+      }
     }),
   );
 
-  // Register editor commands (table editor, convert, dump, SGA, batch, etc.)
+  const fsProvider = registerRgdFileSystem(context);
+  registerRgdLinkProvider(context);
+
   const commands = new RgdCommands(context);
   context.subscriptions.push(
     vscode.commands.registerCommand(
@@ -106,13 +117,18 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
-  // Handle link/reference navigation
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "rgdEditor.openReferencedFile",
       async (filePath: string, line: number = 0, isIcon: boolean = false) => {
         try {
           if (!filePath) return;
+          if (isNilReference(filePath)) {
+            vscode.window.showInformationMessage(
+              "Nil sentinel reference — no parent file to open.",
+            );
+            return;
+          }
           const safePath = sanitizeUserPath(filePath);
           if (!safePath) {
             vscode.window.showWarningMessage("Invalid file path");
@@ -148,8 +164,6 @@ export function activate(context: vscode.ExtensionContext) {
             if (searchPath.startsWith("/"))
               searchPath = searchPath.substring(1);
 
-            // Prefer the detected attribRoot of the current document — a
-            // direct join is O(1) vs globbing the whole workspace.
             const activeFsPath =
               vscode.window.activeTextEditor?.document.uri.fsPath;
             const attribBase = activeFsPath
@@ -224,7 +238,10 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
-  // Register the custom table editor webview
+  const retainWebview = vscode.workspace
+    .getConfiguration("rgdEditor")
+    .get("retainWebviewContext", true);
+
   const editorProvider = new RgdEditorProvider(
     context.extensionUri,
     context,
@@ -235,22 +252,17 @@ export function activate(context: vscode.ExtensionContext) {
       "rgdEditor.rgdEditor",
       editorProvider,
       {
-        webviewOptions: { retainContextWhenHidden: true },
+        webviewOptions: { retainContextWhenHidden: retainWebview },
         supportsMultipleEditorsPerDocument: false,
       },
     ),
   );
 
-  // Register the sidebar tree view
   registerRgdTreeView(context);
 
-  // Register CLI-style commands (native, no child_process spawn)
-  registerCliCommands(context);
+  void import("./cliCommands").then((m) => m.registerCliCommands(context));
+  void import("./parityChecker").then((m) => m.registerParityCommands(context));
 
-  // Register parity checker commands
-  registerParityCommands(context);
-
-  // PowerShell setup — open terminal with setup.ps1 sourced
   const setupScript = path.join(context.extensionPath, "cli", "setup.ps1");
   if (fs.existsSync(setupScript)) {
     context.subscriptions.push(
@@ -265,8 +277,6 @@ export function activate(context: vscode.ExtensionContext) {
     );
   }
 
-  // Guard: if a .rgd binary is opened directly as a text doc (bypasses custom editor),
-  // redirect immediately to the VFS-backed text view with proper language
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument(async (doc) => {
       if (
@@ -280,13 +290,12 @@ export function activate(context: vscode.ExtensionContext) {
           await vscode.window.showTextDocument(vfsDoc, { preview: false });
           await vscode.languages.setTextDocumentLanguage(vfsDoc, "rgd-text");
         } catch {
-          /* silently ignore — custom editor will handle it */
+          /* custom editor handles direct .rgd opens */
         }
       }
     }),
   );
 
-  // Auto-convert .rgd.txt to binary on save if enabled
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument(async (doc) => {
       const config = vscode.workspace.getConfiguration("rgdEditor");

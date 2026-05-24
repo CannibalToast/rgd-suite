@@ -2,7 +2,7 @@
   "name": "rgd-suite",
   "displayName": "RGD Suite",
   "description": "Corsix, but for VS Code! Complete toolkit for Relic Game Data (RGD) files — table editor, Lua↔RGD conversion, SGA extraction, parity checker, and CLI commands for Dawn of War / Company of Heroes modding.",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "publisher": "CannibalToast",
   "repository": {
     "type": "git",
@@ -18,27 +18,7 @@
   ],
   "activationEvents": [
     "onFileSystem:rgd",
-    "workspaceContains:**/*.rgd",
-    "onCommand:rgdEditor.openRgd",
-    "onCommand:rgdEditor.openRgdText",
-    "onCommand:rgdEditor.convertToText",
-    "onCommand:rgdEditor.convertToBinary",
-    "onCommand:rgdEditor.showInfo",
-    "onCommand:rgdEditor.extractFromSga",
-    "onCommand:rgdEditor.dumpToLua",
-    "onCommand:rgdEditor.compileToRgd",
-    "onCommand:rgdEditor.batchToLua",
-    "onCommand:rgdEditor.batchToRgd",
-    "onCommand:rgdEditor.selectLocaleFolder",
-    "onCommand:rgdEditor.refreshTree",
-    "onCommand:rgdEditor.loadTreeView",
-    "onLanguage:rgd-text",
-    "onCommand:rgd.fromLua",
-    "onCommand:rgd.toLua",
-    "onCommand:rgd.info",
-    "onCommand:rgd.validate",
-    "onCommand:rgdSuite.checkParity",
-    "onCommand:rgdSuite.batchCheckParity"
+    "workspaceContains:**/*.rgd"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -182,6 +162,26 @@
         "category": "RGD Suite"
       },
       {
+        "command": "rgd.validatePath",
+        "title": "Validate Path",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgd.validateEncoding",
+        "title": "Validate Encoding",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgd.validateReferences",
+        "title": "Validate References",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgd.batchValidate",
+        "title": "Batch Validate Folder",
+        "category": "RGD Suite"
+      },
+      {
         "command": "rgdSuite.checkParity",
         "title": "Check Parity (RGD ↔ Lua)",
         "category": "RGD Suite"
@@ -226,27 +226,47 @@
         {
           "when": "resourceExtname == .rgd || resourceExtname == .lua",
           "command": "rgdSuite.checkParity",
-          "group": "convert@1"
+          "group": "validate@1"
+        },
+        {
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
+          "command": "rgd.validatePath",
+          "group": "validate@2"
+        },
+        {
+          "when": "resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
+          "command": "rgd.validateEncoding",
+          "group": "validate@3"
+        },
+        {
+          "when": "resourceExtname == .rgd || resourceExtname == .lua",
+          "command": "rgd.validateReferences",
+          "group": "validate@4"
+        },
+        {
+          "when": "explorerResourceIsFolder",
+          "command": "rgd.batchValidate",
+          "group": "validate@5"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgdEditor.convertToText",
-          "group": "convert@2"
+          "group": "convert@1"
         },
         {
           "when": "resourceFilename =~ /\\.rgd\\.txt$/",
           "command": "rgdEditor.convertToBinary",
-          "group": "convert@3"
+          "group": "convert@2"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgdEditor.dumpToLua",
-          "group": "convert@4"
+          "group": "convert@3"
         },
         {
           "when": "resourceExtname == .lua",
           "command": "rgdEditor.compileToRgd",
-          "group": "convert@5"
+          "group": "convert@4"
         },
         {
           "when": "resourceExtname == .lua",
@@ -331,6 +351,16 @@
           "enum": [1, 3],
           "description": "Default RGD version when creating new files"
         },
+        "rgdEditor.resolveLocaleStrings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Resolve $-prefixed locale IDs to UCS text when opening RGD files (defers heavy locale scanning when disabled)."
+        },
+        "rgdEditor.retainWebviewContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the table editor webview alive when hidden. Disable to reduce memory use on large files."
+        },
         "rgdEditor.preferredLanguage": {
           "type": "string",
           "default": "Chinese",
@@ -354,22 +384,37 @@
           "default": "",
           "description": "Path to attrib folder for resolving references (auto-detected if empty)"
         },
+        "rgdSuite.vfsCacheSize": {
+          "type": "integer",
+          "default": 50,
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Maximum parsed RGD files cached for the rgd:// virtual text view."
+        },
+        "rgdSuite.treeCacheSize": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Maximum parsed RGD files cached for the RGD Tree sidebar (shared parse cache with VFS/editor)."
+        },
         "rgdSuite.parityWorkers": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
-          "description": "Worker threads used by Batch Parity Check. 0 = auto (logical CPU count − 1, minimum 1). Raise for faster throughput on many-core machines; lower if VS Code becomes unresponsive during large batches."
+          "description": "Worker threads for Batch Parity Check. 0 = auto: min(logical CPUs − 1, 4), at least 1."
         },
         "rgdSuite.batchWorkers": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
-          "description": "Worker threads used by Batch Convert Folder to Lua/RGD. 0 = auto (logical CPU count − 1, minimum 1). Raise for faster throughput on many-core machines; lower if VS Code becomes unresponsive during large batches."
+          "description": "Worker threads for batch convert and batch validate. 0 = auto: min(logical CPUs − 1, 4), at least 1."
         }
       }
     }
   },
   "scripts": {
+    "test": "node test/validators.test.js && node test/task-scheduling.test.js && node test/batch-validate-ui.test.js && node test/batch-validate-worker.test.js && node test/package-menu.test.js && node test/cli-parity.test.js",
     "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node16 --minify --legal-comments=none --resolve-extensions=.ts,.js --tsconfig=tsconfig.json",
     "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node16 --sourcemap --resolve-extensions=.ts,.js --tsconfig=tsconfig.json --watch",
     "package": "vsce package --no-dependencies && node -e \"const {execSync,version}=require('child_process'),p=require('./package.json');const src='rgd-suite-'+p.version+'.vsix';require('fs').copyFileSync(src,'rgd-suite-latest.vsix');console.log('Copied '+src+' -> rgd-suite-latest.vsix')\"",

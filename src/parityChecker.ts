@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import * as os from "os";
 import { parseRgd } from "../bundled/rgd-tools/dist/reader";
 import {
   parseLuaToTable,
@@ -16,6 +15,17 @@ import {
 import { DictionaryManager } from "./dictionaryManager";
 import { ParityWorkerPool } from "./workerPool";
 import { getErrorMessage } from "./errorUtils";
+import { defaultWorkerCount, scheduleBatched } from "./taskScheduling";
+import {
+  ValidationIssue,
+  validateEncoding,
+  validateLuaReferences,
+  validateRgdReferences,
+  stripUtf8Bom,
+  stripUtf8BomFromFile,
+  ValidationFix,
+  isNilReference,
+} from "./validators";
 
 const FLOAT_EPSILON = 1e-4;
 
@@ -42,6 +52,8 @@ export interface ParityResult {
   luaFile: string | null;
   totalKeys: number;
   issues: ParityIssue[];
+  validationIssues: ValidationIssue[];
+  fixes?: ValidationFix[];
   attribResolved: boolean;
   error?: string;
 }
@@ -152,6 +164,7 @@ function collectMissingRefs(
   for (const [key, entry] of luaTable.entries) {
     const full = prefix ? `${prefix}.${key}` : key;
     if (entry.type === "table" && entry.reference && attribBase) {
+      if (isNilReference(entry.reference)) continue;
       let ref = entry.reference.replace(/\\/g, "/");
       if (!ref.endsWith(".lua")) ref += ".lua";
       if (!fs.existsSync(path.join(attribBase, ref))) {
@@ -176,20 +189,31 @@ export function checkParity(
   luaPath: string,
   dict: HashDictionary,
   fileCache: Map<string, string | null> = new Map(),
+  validateReferences = true,
 ): ParityResult {
   const attribBase = findAttribBase(rgdPath) ?? findAttribBase(luaPath);
   const luaLoader = makeLuaFileLoader(attribBase, dict, fileCache);
   const issues: ParityIssue[] = [];
+  const validationIssues: ValidationIssue[] = [];
+  const fixes: ValidationFix[] = [];
 
   const rgdBuf = fs.readFileSync(rgdPath);
   const rgdFile = parseRgd(rgdBuf, dict);
   const rgdMap = flattenRgd(rgdFile.gameData, dict);
 
-  const luaCode = fs.readFileSync(luaPath, "utf8");
+  const bomResult = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
+  if (bomResult.fix) fixes.push(bomResult.fix);
+  const luaBuf = bomResult.buffer;
+  validationIssues.push(...validateEncoding(luaBuf, luaPath).issues);
+  const luaCode = stripUtf8Bom(luaBuf.toString("utf8"));
   const luaTable = parseLuaToTable(luaCode, luaLoader);
   const luaMap = flattenLua(luaTable);
 
   issues.push(...collectMissingRefs(luaTable, attribBase));
+  if (validateReferences) {
+    validationIssues.push(...validateRgdReferences(rgdFile.gameData, attribBase));
+    validationIssues.push(...validateLuaReferences(luaTable, attribBase));
+  }
 
   for (const [key, rgdEntry] of rgdMap) {
     if (key.endsWith(".$ref")) continue;
@@ -239,6 +263,8 @@ export function checkParity(
     luaFile: luaPath,
     totalKeys: rgdMap.size,
     issues,
+    validationIssues,
+    fixes,
     attribResolved: !!attribBase,
   };
 }
@@ -294,21 +320,29 @@ function getChannel(): vscode.OutputChannel {
 function formatResult(result: ParityResult, folder?: string): string {
   const rel = (p: string) =>
     folder ? path.relative(folder, p) : path.basename(p);
+  const validationIssues = result.validationIssues ?? [];
+  const fixes = result.fixes ?? [];
+  const problemCount = result.issues.length + validationIssues.length;
   const status = result.error
     ? "ERROR"
-    : result.issues.length === 0
+    : problemCount === 0
       ? "PASS "
       : "FAIL ";
   const luaLabel = result.luaFile ? rel(result.luaFile) : "(no .lua found)";
-  const header = `[${status}] ${rel(result.rgdFile)} ↔ ${luaLabel}  [${result.totalKeys} keys | ${result.issues.length} issues${!result.attribResolved ? " | ⚠ no attrib root" : ""}]`;
+  const header = `[${status}] ${rel(result.rgdFile)} ↔ ${luaLabel}  [${result.totalKeys} keys | ${result.issues.length} parity issues | ${validationIssues.length} validation issues | ${fixes.length} fixes${!result.attribResolved ? " | ⚠ no attrib root" : ""}]`;
 
   if (result.error) return `${header}\n  ERROR: ${result.error}`;
-  if (result.issues.length === 0) return header;
+  if (problemCount === 0) return header;
 
   const byKind: Record<string, ParityIssue[]> = {};
   for (const issue of result.issues) (byKind[issue.kind] ??= []).push(issue);
+  const validationByKind: Record<string, ValidationIssue[]> = {};
+  for (const issue of validationIssues) {
+    (validationByKind[issue.kind] ??= []).push(issue);
+  }
 
   const lines = [header];
+  for (const fix of fixes) lines.push(`  FIXED ${fix.path}: ${fix.details}`);
   const section = (label: string, items?: ParityIssue[], max = 10) => {
     if (!items?.length) return;
     lines.push(`  ${label} (${items.length}):`);
@@ -323,6 +357,22 @@ function formatResult(result: ParityResult, folder?: string): string {
   section("Value Mismatches", byKind.value_mismatch);
   section("Type Mismatches", byKind.type_mismatch);
   section("Missing Reference Files", byKind.missing_ref, 50);
+  const validationSection = (
+    label: string,
+    items?: ValidationIssue[],
+    max = 20,
+  ) => {
+    if (!items?.length) return;
+    lines.push(`  ${label} (${items.length}):`);
+    items
+      .slice(0, max)
+      .forEach((i) =>
+        lines.push(`    - ${i.key ? i.key + ": " : ""}${i.path}: ${i.details}`),
+      );
+    if (items.length > max)
+      lines.push(`    ... and ${items.length - max} more`);
+  };
+  validationSection("Validation Issues", validationIssues, 50);
   return lines.join("\n");
 }
 
@@ -374,20 +424,30 @@ export function registerParityCommands(context: vscode.ExtensionContext) {
           `Parity Check: ${path.basename(rgdPath)}  [${new Date().toLocaleTimeString()}]`,
         );
         try {
-          const result = checkParity(rgdPath, luaPath, dict);
+          const result = await new Promise<ParityResult>((resolve, reject) => {
+            setImmediate(() => {
+              try {
+                resolve(checkParity(rgdPath, luaPath, dict));
+              } catch (e) {
+                reject(e);
+              }
+            });
+          });
           out.appendLine(formatResult(result));
           if (!result.attribResolved) {
             out.appendLine(
               "  ⚠ Attrib root not found — parent references unresolved. Results may show false positives.",
             );
           }
-          if (result.issues.length === 0) {
+          const problemCount =
+            result.issues.length + (result.validationIssues?.length ?? 0);
+          if (problemCount === 0) {
             vscode.window.showInformationMessage(
               `✓ Parity OK: ${path.basename(rgdPath)}`,
             );
           } else {
             vscode.window.showWarningMessage(
-              `⚠ ${result.issues.length} discrepancy/ies in ${path.basename(rgdPath)} — see Output > RGD Parity Checker`,
+              `⚠ ${problemCount} parity/validation issue(s) in ${path.basename(rgdPath)} — see Output > RGD Parity Checker`,
             );
           }
         } catch (e) {
@@ -461,11 +521,8 @@ export function registerParityCommands(context: vscode.ExtensionContext) {
         const configuredCount = vscode.workspace
           .getConfiguration("rgdSuite")
           .get<number>("parityWorkers", 0);
-        const autoCount = Math.max(1, os.cpus().length - 1);
         const workerCount = canUseWorkers
-          ? configuredCount > 0
-            ? configuredCount
-            : autoCount
+          ? defaultWorkerCount(configuredCount)
           : 0;
 
         // Pre-partition before workers spin up — one header line for skips, not N appendLine calls
@@ -507,7 +564,9 @@ export function registerParityCommands(context: vscode.ExtensionContext) {
 
             const onResult = (result: ParityResult, rgd: string) => {
               completed++;
-              if (result.issues.length === 0) {
+              const problemCount =
+                result.issues.length + (result.validationIssues?.length ?? 0);
+              if (problemCount === 0) {
                 passed++;
               } else {
                 failed++;
@@ -551,18 +610,17 @@ export function registerParityCommands(context: vscode.ExtensionContext) {
                   activePool.cancel();
                   out.appendLine("⚠ Cancelled by user");
                 });
-                const tasks = checkable.map(({ rgd, lua }) =>
-                  activePool
-                    .check(rgd, lua)
-                    .then((result) => onResult(result, rgd))
-                    .catch((e) => {
-                      out.appendLine(
-                        `[ERROR] ${path.relative(folder, rgd)}: ${getErrorMessage(e)}`,
-                      );
-                      errored++;
-                    }),
-                );
-                await Promise.allSettled(tasks);
+                await scheduleBatched(checkable, workerCount, async ({ rgd, lua }) => {
+                  try {
+                    const result = await activePool.check(rgd, lua);
+                    onResult(result, rgd);
+                  } catch (e) {
+                    out.appendLine(
+                      `[ERROR] ${path.relative(folder, rgd)}: ${getErrorMessage(e)}`,
+                    );
+                    errored++;
+                  }
+                });
               } else {
                 // ── Sequential fallback ────────────────────────────────
                 const fileCache = new Map<string, string | null>();

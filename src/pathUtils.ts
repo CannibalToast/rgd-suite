@@ -1,4 +1,11 @@
 import * as path from "path";
+import * as fs from "fs";
+import {
+  detectBOM as detectBufferBOM,
+  validateEncoding,
+  BOMType,
+  EncodingResult,
+} from "./validators";
 
 const TRAVERSAL_RE = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
 const ABSOLUTE_RE = /^[a-zA-Z]:[\\/]|^\\|^\//;
@@ -20,19 +27,25 @@ export function isSafeRelativePath(rel: string): boolean {
 
 /**
  * Sanitize a reference path for use within an attrib root.
- * Removes leading/trailing separators, parent-directory references,
- * and null bytes. Returns null if the path is invalid or would
- * escape the base directory.
+ * Normalizes an attrib reference. Returns null if the path is invalid or
+ * would escape the base directory.
  */
 export function sanitizeRefPath(refPath: string): string | null {
   if (!refPath || typeof refPath !== "string") {
     return null;
   }
-  let clean = refPath.replace(/\\/g, "/");
-  if (clean.startsWith("/")) {
-    clean = clean.substring(1);
+  if (NULL_BYTE_RE.test(refPath) || ABSOLUTE_RE.test(refPath)) {
+    return null;
   }
-  const parts = clean.split("/").filter((p) => p && p !== "." && p !== "..");
+  const clean = refPath
+    .replace(/\\/g, "/")
+    .trim()
+    .replace(/^data\/attrib\//i, "")
+    .replace(/^attrib\//i, "");
+  if (TRAVERSAL_RE.test(clean)) {
+    return null;
+  }
+  const parts = clean.split("/").filter((p) => p && p !== ".");
   if (parts.length === 0) {
     return null;
   }
@@ -81,5 +94,30 @@ export function safeJoin(baseDir: string, relPath: string): string | null {
   ) {
     return null;
   }
+  if (fs.existsSync(resolved)) {
+    try {
+      const realResolved = fs.realpathSync(resolved);
+      const realBase = fs.realpathSync(resolvedBase);
+      if (
+        !realResolved.toLowerCase().startsWith(realBase.toLowerCase() + path.sep) &&
+        realResolved.toLowerCase() !== realBase.toLowerCase()
+      ) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+  }
   return resolved;
+}
+
+export function detectBOM(buffer: Buffer): BOMType {
+  return detectBufferBOM(buffer).type;
+}
+
+export function validatePathEncoding(filePath: string): EncodingResult | null {
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    return null;
+  }
+  return validateEncoding(fs.readFileSync(filePath), filePath);
 }

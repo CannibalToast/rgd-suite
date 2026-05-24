@@ -1,5 +1,4 @@
 import * as vscode from "vscode";
-import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import { parseRgd, readRgdFile } from "../bundled/rgd-tools/dist/reader";
@@ -16,11 +15,14 @@ import {
   countEntries,
   collectFilesAsync,
 } from "./attribUtils";
-import { openSgaArchive } from "../bundled/rgd-tools/dist/sga";
 import { DictionaryManager } from "./dictionaryManager";
 import { getErrorMessage } from "./errorUtils";
 import { LocaleManager } from "./localeManager";
 import { BatchConvertWorkerPool, BatchOp } from "./batchConvertPool";
+import { stripUtf8BomFromFile } from "./validators";
+import { defaultWorkerCount, scheduleBatched } from "./taskScheduling";
+import { invalidateAttribIndex } from "./pathResolver";
+import { invalidateParsedRgdCache } from "./parsedRgdCache";
 
 export class RgdCommands {
   constructor(private readonly context: vscode.ExtensionContext) {}
@@ -161,6 +163,7 @@ export class RgdCommands {
     }
 
     try {
+      const { openSgaArchive } = await import("../bundled/rgd-tools/dist/sga");
       const sga = openSgaArchive(uri.fsPath);
       const rgdFiles = sga.listRgdFiles();
 
@@ -307,7 +310,10 @@ export class RgdCommands {
     }
 
     try {
-      const luaCode = await fs.promises.readFile(uri.fsPath, "utf8");
+      const luaCode = stripUtf8BomFromFile(
+        uri.fsPath,
+        await fs.promises.readFile(uri.fsPath),
+      ).buffer.toString("utf8");
       const dict = this.getDictionary();
       const attribBase = findAttribBase(uri.fsPath);
       const rgdParentLoader = makeRgdParentLoader(attribBase, dict);
@@ -417,11 +423,8 @@ export class RgdCommands {
     const configuredCount = vscode.workspace
       .getConfiguration("rgdSuite")
       .get<number>("batchWorkers", 0);
-    const autoCount = Math.max(1, os.cpus().length - 1);
     const workerCount = canUseWorkers
-      ? configuredCount > 0
-        ? configuredCount
-        : autoCount
+      ? defaultWorkerCount(configuredCount)
       : 0;
 
     let pool: BatchConvertWorkerPool | null = null;
@@ -472,7 +475,7 @@ export class RgdCommands {
             token.onCancellationRequested(() => pool?.cancel());
 
             const activePool = pool;
-            const tasks = files.map(async (inputFile) => {
+            await scheduleBatched(files, workerCount, async (inputFile) => {
               if (token.isCancellationRequested) return;
               const outPath = inputFile.replace(
                 opts.inputExt === ".rgd" ? /\.rgd$/i : /\.lua$/i,
@@ -487,17 +490,9 @@ export class RgdCommands {
                 );
                 created.push(outPath);
               } catch (e) {
-                // Don't re-run work on the extension host if the user
-                // just cancelled — pool.cancel() rejects the rest of
-                // the queue with Error('Cancelled') and falling back
-                // here would process every remaining file serially,
-                // defeating the cancel button.
                 if (token.isCancellationRequested) {
                   // Intentionally no-op: progress is bumped in finally.
                 } else {
-                  // Workers may fail on a malformed file — fall back to
-                  // in-process conversion so a single bad input doesn't
-                  // fail the entire batch.
                   try {
                     if (opts.op === "toLua" && fallbackParentLoader) {
                       const rgd = parseRgd(
@@ -511,10 +506,10 @@ export class RgdCommands {
                       await fs.promises.writeFile(outPath, luaCode, "utf8");
                       created.push(outPath);
                     } else if (opts.op === "toRgd" && rgdParentLoader) {
-                      const luaCode = await fs.promises.readFile(
+                      const luaCode = stripUtf8BomFromFile(
                         inputFile,
-                        "utf8",
-                      );
+                        await fs.promises.readFile(inputFile),
+                      ).buffer.toString("utf8");
                       const { gameData, version } = await luaToRgdResolved(
                         luaCode,
                         dict,
@@ -536,7 +531,6 @@ export class RgdCommands {
                 bumpProgress();
               }
             });
-            await Promise.all(tasks);
           } else {
             // Serial fallback (no workers available)
             const parentLoader =
@@ -569,7 +563,10 @@ export class RgdCommands {
                   if (!rgdParentLoader) {
                     throw new Error("rgdParentLoader unavailable");
                   }
-                  const luaCode = await fs.promises.readFile(inputFile, "utf8");
+                  const luaCode = stripUtf8BomFromFile(
+                    inputFile,
+                    await fs.promises.readFile(inputFile),
+                  ).buffer.toString("utf8");
                   const { gameData, version } = await luaToRgdResolved(
                     luaCode,
                     dict,
@@ -596,6 +593,10 @@ export class RgdCommands {
         // files (which bump progress but produce no output) aren't
         // miscounted as successes.
         const successes = created.length;
+        if (successes > 0 && attribBase) {
+          invalidateAttribIndex(attribBase);
+          invalidateParsedRgdCache();
+        }
         vscode.window.showInformationMessage(
           `${opts.verbPast} ${successes} files${errors > 0 ? `, ${errors} errors` : ""}`,
         );

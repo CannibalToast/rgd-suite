@@ -1,32 +1,19 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import { parseRgd } from "../bundled/rgd-tools/dist/reader";
-import { rgdToText, textToRgd } from "../bundled/rgd-tools/dist/textFormat";
+import { textToRgd } from "../bundled/rgd-tools/dist/textFormat";
 import { buildRgd } from "../bundled/rgd-tools/dist/writer";
 import { DictionaryManager } from "./dictionaryManager";
-import { HashDictionary } from "../bundled/rgd-tools/dist/types";
-import { LocaleManager } from "./localeManager";
 import { getErrorMessage } from "./errorUtils";
+import { getParsedRgd, getVfsText, invalidateParsedRgdCache } from "./parsedRgdCache";
 
 export class RgdFileSystemProvider implements vscode.FileSystemProvider {
   private _emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
   readonly onDidChangeFile: vscode.Event<vscode.FileChangeEvent[]> =
     this._emitter.event;
 
-  private readonly FILE_CACHE_MAX = 50;
-  // LRU: `Map` preserves insertion order; touch on hit by delete+set.
-  private fileCache = new Map<
-    string,
-    { version: number; mtime: number; text: string }
-  >();
-
   constructor(private readonly context: vscode.ExtensionContext) {
     console.log("[RGD FS] Initialized");
-  }
-
-  private getDictionary(): HashDictionary {
-    return DictionaryManager.getInstance().getDictionary(this.context);
   }
 
   toRealPath(uri: vscode.Uri): string {
@@ -67,31 +54,8 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
   async readFile(uri: vscode.Uri): Promise<Uint8Array> {
     const realPath = this.toRealPath(uri);
     try {
-      const stats = await fs.promises.stat(realPath);
-      const currentMtime = stats.mtimeMs;
-      const cached = this.fileCache.get(realPath);
-      if (cached && cached.mtime === currentMtime) {
-        // Touch to move to LRU tail
-        this.fileCache.delete(realPath);
-        this.fileCache.set(realPath, cached);
-        return Buffer.from(cached.text, "utf8");
-      }
-      const buffer = await fs.promises.readFile(realPath);
       const dict = DictionaryManager.getInstance().getDictionary(this.context);
-      const rgdFile = parseRgd(buffer, dict);
-      const localeMap = LocaleManager.getInstance().getLocaleMap(realPath);
-      const text = rgdToText(rgdFile, path.basename(realPath), localeMap);
-      if (this.fileCache.size >= this.FILE_CACHE_MAX) {
-        const firstKey = this.fileCache.keys().next().value;
-        if (firstKey !== undefined) {
-          this.fileCache.delete(firstKey);
-        }
-      }
-      this.fileCache.set(realPath, {
-        version: rgdFile.header.version,
-        mtime: currentMtime,
-        text,
-      });
+      const text = await getVfsText(realPath, dict);
       return Buffer.from(text, "utf8");
     } catch (error) {
       const errorText = `# Error reading RGD file: ${getErrorMessage(error)}\n# File may be corrupted or not a valid RGD file.`;
@@ -105,11 +69,16 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
     try {
       const dict = DictionaryManager.getInstance().getDictionary(this.context);
       const { gameData, version } = textToRgd(text, dict);
-      const cached = this.fileCache.get(realPath);
-      const finalVersion = cached?.version ?? version;
+      let finalVersion = version;
+      try {
+        const entry = await getParsedRgd(realPath, dict);
+        finalVersion = entry.rgd.header.version;
+      } catch {
+        /* use version from text */
+      }
       const binaryBuffer = buildRgd(gameData, dict, finalVersion);
       await fs.promises.writeFile(realPath, binaryBuffer);
-      this.fileCache.delete(realPath);
+      invalidateParsedRgdCache(realPath);
       this._emitter.fire([{ type: vscode.FileChangeType.Changed, uri }]);
       vscode.window.setStatusBarMessage(
         `✓ Saved ${path.basename(realPath)}`,
@@ -126,11 +95,13 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
   async delete(uri: vscode.Uri): Promise<void> {
     const realPath = this.toRealPath(uri);
     await fs.promises.unlink(realPath);
-    this.fileCache.delete(realPath);
+    invalidateParsedRgdCache(this.toRealPath(uri));
   }
 
   async rename(oldUri: vscode.Uri, newUri: vscode.Uri): Promise<void> {
-    await fs.promises.rename(this.toRealPath(oldUri), this.toRealPath(newUri));
+    const oldPath = this.toRealPath(oldUri);
+    await fs.promises.rename(oldPath, this.toRealPath(newUri));
+    invalidateParsedRgdCache(oldPath);
   }
 }
 

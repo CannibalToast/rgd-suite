@@ -17,11 +17,37 @@ export interface RgdNode {
   localeLine?: number;
 }
 
+export interface RgdToTreeOptions {
+  /** When false, skip sync path resolution (background pass can call resolveNodePaths). */
+  resolvePaths?: boolean;
+}
+
+export function resolveNodePaths(nodes: RgdNode[], attribRoot: string): void {
+  const walk = (list: RgdNode[]) => {
+    for (const node of list) {
+      let resolved: ResolvedPathInfo | undefined;
+      if (node.ref) {
+        resolved = resolveAttribPath(node.ref, attribRoot);
+      } else {
+        resolved = tryResolveValuePath(node.value, attribRoot);
+      }
+      if (resolved) {
+        node.resolvedPath = resolved.path;
+        node.resolvedExists = resolved.exists;
+      }
+      if (node.children) walk(node.children);
+    }
+  };
+  walk(nodes);
+}
+
 export function rgdToTree(
   table: RgdTable,
   attribRoot?: string,
-  localeMap?: Map<string, LocaleEntry>
+  localeMap?: Map<string, LocaleEntry>,
+  options?: RgdToTreeOptions,
 ): RgdNode[] {
+  const resolvePaths = options?.resolvePaths !== false;
   const nodes: RgdNode[] = [];
   for (const entry of table.entries) {
     const node: RgdNode = {
@@ -33,11 +59,11 @@ export function rgdToTree(
     };
 
     if (entry.type === RgdDataType.Table || entry.type === RgdDataType.TableInt) {
-      node.children = rgdToTree(entry.value as RgdTable, attribRoot, localeMap);
+      node.children = rgdToTree(entry.value as RgdTable, attribRoot, localeMap, options);
       node.value = '';
     }
 
-    if (attribRoot) {
+    if (attribRoot && resolvePaths) {
       let resolved: ResolvedPathInfo | undefined;
       if (node.ref) {
         resolved = resolveAttribPath(node.ref, attribRoot);
