@@ -1,5 +1,5 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from "fs";
+import * as path from "path";
 
 const _DFS_CACHE_MAX = 2000;
 const _dfsCache = new Map<string, string | undefined>();
@@ -17,18 +17,28 @@ export interface ResolvedPathInfo {
   exists: boolean;
 }
 
-export function resolveAttribPath(ref: string, attribRoot: string): ResolvedPathInfo {
-  let normalizedRef = ref.replace(/\\/g, '/');
-  if (normalizedRef.startsWith('/')) normalizedRef = normalizedRef.substring(1);
+export function resolveAttribPath(
+  ref: string,
+  attribRoot: string,
+): ResolvedPathInfo {
+  let normalizedRef = ref.replace(/\\/g, "/");
+  if (normalizedRef.startsWith("/")) normalizedRef = normalizedRef.substring(1);
 
-  const attribRootNormalized = attribRoot.replace(/\\/g, '/');
-  if (normalizedRef.toLowerCase().includes(attribRootNormalized.toLowerCase())) {
-    const index = normalizedRef.toLowerCase().indexOf(attribRootNormalized.toLowerCase());
-    normalizedRef = normalizedRef.substring(index + attribRootNormalized.length);
-    if (normalizedRef.startsWith('/')) normalizedRef = normalizedRef.substring(1);
-  } else if (normalizedRef.toLowerCase().startsWith('data/attrib/')) {
+  const attribRootNormalized = attribRoot.replace(/\\/g, "/");
+  if (
+    normalizedRef.toLowerCase().includes(attribRootNormalized.toLowerCase())
+  ) {
+    const index = normalizedRef
+      .toLowerCase()
+      .indexOf(attribRootNormalized.toLowerCase());
+    normalizedRef = normalizedRef.substring(
+      index + attribRootNormalized.length,
+    );
+    if (normalizedRef.startsWith("/"))
+      normalizedRef = normalizedRef.substring(1);
+  } else if (normalizedRef.toLowerCase().startsWith("data/attrib/")) {
     normalizedRef = normalizedRef.substring(12);
-  } else if (normalizedRef.toLowerCase().startsWith('attrib/')) {
+  } else if (normalizedRef.toLowerCase().startsWith("attrib/")) {
     normalizedRef = normalizedRef.substring(7);
   }
 
@@ -39,9 +49,15 @@ export function resolveAttribPath(ref: string, attribRoot: string): ResolvedPath
   return { path: found ?? fullPath, exists: found ? true : false };
 }
 
-export function tryResolveValuePath(value: unknown, attribRoot: string): ResolvedPathInfo | undefined {
-  if (typeof value !== 'string') return undefined;
-  if (!(/[\\/]/.test(value) || value.endsWith('.lua') || value.endsWith('.rgd'))) return undefined;
+export function tryResolveValuePath(
+  value: unknown,
+  attribRoot: string,
+): ResolvedPathInfo | undefined {
+  if (typeof value !== "string") return undefined;
+  if (
+    !(/[\\/]/.test(value) || value.endsWith(".lua") || value.endsWith(".rgd"))
+  )
+    return undefined;
   return resolveAttribPath(value, attribRoot);
 }
 
@@ -51,7 +67,10 @@ function getFilenameIndex(attribRoot: string): FilenameIndex {
 
   // Cap cache so switching between many projects can't grow unbounded.
   if (_filenameIndexCache.size >= _FILENAME_INDEX_MAX_ROOTS) {
-    _filenameIndexCache.delete(_filenameIndexCache.keys().next().value!);
+    const firstKey = _filenameIndexCache.keys().next().value;
+    if (firstKey !== undefined) {
+      _filenameIndexCache.delete(firstKey);
+    }
   }
 
   const byTail = new Map<string, string[]>();
@@ -71,7 +90,8 @@ function getFilenameIndex(attribRoot: string): FilenameIndex {
       } else if (entry.isFile()) {
         const key = entry.name.toLowerCase();
         const list = byTail.get(key);
-        if (list) list.push(full); else byTail.set(key, [full]);
+        if (list) list.push(full);
+        else byTail.set(key, [full]);
       }
     }
   }
@@ -81,12 +101,17 @@ function getFilenameIndex(attribRoot: string): FilenameIndex {
 }
 
 function findInAttribRoot(rel: string, attribRoot: string): string | undefined {
-  const cacheKey = attribRoot + '\0' + rel;
+  const cacheKey = attribRoot + "\0" + rel;
   if (_dfsCache.has(cacheKey)) return _dfsCache.get(cacheKey);
-  if (_dfsCache.size >= _DFS_CACHE_MAX) _dfsCache.delete(_dfsCache.keys().next().value!);
+  if (_dfsCache.size >= _DFS_CACHE_MAX) {
+    const firstKey = _dfsCache.keys().next().value;
+    if (firstKey !== undefined) {
+      _dfsCache.delete(firstKey);
+    }
+  }
 
-  const targetTail = rel.replace(/\\/g, '/');
-  const parts = targetTail.split('/');
+  const targetTail = rel.replace(/\\/g, "/");
+  const parts = targetTail.split("/");
   const tailName = parts[parts.length - 1].toLowerCase();
   const attribRootNormLen = attribRoot.length + 1;
 
@@ -105,7 +130,10 @@ function findInAttribRoot(rel: string, attribRoot: string): string | undefined {
 
   const targetTailLower = targetTail.toLowerCase();
   for (const candidate of candidates) {
-    const relFromRoot = candidate.substring(attribRootNormLen).replace(/\\/g, '/').toLowerCase();
+    const relFromRoot = candidate
+      .substring(attribRootNormLen)
+      .replace(/\\/g, "/")
+      .toLowerCase();
     if (relFromRoot.endsWith(targetTailLower)) {
       _dfsCache.set(cacheKey, candidate);
       return candidate;
@@ -122,7 +150,7 @@ function findInAttribRoot(rel: string, attribRoot: string): string | undefined {
 export function invalidateAttribIndex(attribRoot?: string): void {
   if (attribRoot) {
     _filenameIndexCache.delete(attribRoot);
-    const prefix = attribRoot + '\0';
+    const prefix = attribRoot + "\0";
     for (const k of _dfsCache.keys()) {
       if (k.startsWith(prefix)) _dfsCache.delete(k);
     }
