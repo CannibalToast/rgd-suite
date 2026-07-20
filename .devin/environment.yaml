@@ -1,0 +1,28 @@
+initialize:
+  - run: |
+      set -e
+      # Ensure Node.js 18+ is available
+      if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d'v' -f2 | cut -d'.' -f1)" -lt 18 ]; then
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+      fi
+      npm ci
+      npm run build
+
+maintenance:
+  - run: |
+      set -e
+      npm install
+      npm run build
+
+knowledge:
+  - name: lint
+    contents: |
+      npx tsc --noEmit
+  - name: test
+    contents: |
+      node test/roundtrip.js
+  - name: startup
+    contents: |
+      npm run build-all
+      code --install-extension rgd-suite-latest.vsix
