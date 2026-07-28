@@ -10,6 +10,11 @@ import {
   getTreeNodes,
   invalidateParsedRgdCache,
 } from "./parsedRgdCache";
+import {
+  buildDiffHighlightMap,
+  diffRgdAgainstGit,
+  TableDiffResult,
+} from "./tableDiff";
 
 function shallowTreePayload(nodes: RgdNode[]): Record<string, unknown>[] {
   return nodes.map((n) => ({
@@ -111,9 +116,14 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
               break;
 
             case "requestChildren": {
-              const nodePath = message.path as number[] | undefined;
-              if (!nodePath) break;
-              const parent = nodeAtPath(document.nodes, nodePath);
+              const nodePath = message.path;
+              if (
+                !Array.isArray(nodePath) ||
+                !nodePath.every((n: unknown) => typeof n === "number")
+              ) {
+                break;
+              }
+              const parent = nodeAtPath(document.nodes, nodePath as number[]);
               webviewPanel.webview.postMessage({
                 type: "loadChildren",
                 path: nodePath,
@@ -154,11 +164,15 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
               break;
 
             case "updateValue":
-              if (message.path && message.value !== undefined) {
+              if (
+                Array.isArray(message.path) &&
+                message.path.every((n: unknown) => typeof n === "number") &&
+                message.value !== undefined
+              ) {
                 this._updateNodeValue(
                   document.nodes,
-                  message.path,
-                  message.key,
+                  message.path as number[],
+                  typeof message.key === "string" ? message.key : null,
                   message.value,
                 );
                 document.isDirty = true;
@@ -192,6 +206,19 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
                 );
               }
               break;
+
+            case "requestGitDiff": {
+              const ref =
+                typeof message.ref === "string" && message.ref.trim()
+                  ? message.ref.trim()
+                  : "HEAD";
+              await this._runGitDiff(
+                document,
+                webviewPanel,
+                ref,
+              );
+              break;
+            }
           }
         },
       );
@@ -203,11 +230,32 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
     }
   }
 
+  private _escapeHtml(text: string): string {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  private _getNonce(): string {
+    const chars =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let nonce = "";
+    for (let i = 0; i < 32; i++) {
+      nonce += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return nonce;
+  }
+
   private _getErrorHtml(filePath: string, errorMessage: string): string {
+    const safeName = this._escapeHtml(path.basename(filePath));
+    const safeError = this._escapeHtml(errorMessage);
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
     <style>
         body { font-family: sans-serif; padding: 20px; background: #1e1e1e; color: #ccc; }
         .error { color: #f44; padding: 20px; background: #2d2d30; border-radius: 4px; }
@@ -217,10 +265,10 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
 <body>
     <h2>Failed to load RGD file</h2>
     <div class="error">
-        <strong>File:</strong> ${path.basename(filePath)}<br><br>
-        <strong>Error:</strong> ${errorMessage}
+        <strong>File:</strong> ${safeName}<br><br>
+        <strong>Error:</strong> ${safeError}
     </div>
-    <p>Try using the text editor backup: Right-click the file → "RGD: Open (Plain Text Editor)"</p>
+    <p>Try using the text editor backup: Right-click the file → "RGD Suite: Open (Plain Text Editor)"</p>
 </body>
 </html>`;
   }
@@ -236,20 +284,31 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
     const styleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._extensionUri, "media", "editor.css"),
     );
+    const nonce = this._getNonce();
+    const csp = [
+      "default-src 'none'",
+      `style-src ${webview.cspSource} 'unsafe-inline'`,
+      `script-src 'nonce-${nonce}'`,
+      `img-src ${webview.cspSource} data:`,
+      `font-src ${webview.cspSource}`,
+    ].join("; ");
+    const safeTitle = this._escapeHtml(path.basename(filePath));
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="${csp}">
     <link href="${styleUri}" rel="stylesheet">
-    <title>RGD Suite - ${path.basename(filePath)}</title>
+    <title>RGD Suite - ${safeTitle}</title>
 </head>
 <body>
     <div class="rgd-container">
         <div class="toolbar">
-            <span class="toolbar-title">📄 ${path.basename(filePath)}</span>
+            <span class="toolbar-title">📄 ${safeTitle}</span>
             <button class="toolbar-btn primary" id="save-btn" title="Save (Ctrl+S)">💾 Save</button>
+            <button class="toolbar-btn" id="git-diff-btn" title="Compare against git HEAD">Git Diff</button>
             <button class="toolbar-btn" id="expand-all" title="Expand All">Expand All</button>
             <button class="toolbar-btn" id="collapse-all" title="Collapse All">Collapse All</button>
         </div>
@@ -270,13 +329,21 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
                     </div>
                 </div>
             </div>
+            <div class="diff-panel" id="diff-panel" hidden>
+                <div class="diff-header">
+                    <span id="diff-header-text">Git Diff</span>
+                    <button class="toolbar-btn" id="diff-close" title="Close diff panel">Close</button>
+                </div>
+                <div class="diff-content" id="diff-content"></div>
+            </div>
         </div>
         <div class="status-bar">
             <div class="status-item"><span id="status-text">Ready</span></div>
+            <div class="status-item"><span id="diff-status"></span></div>
             <div class="status-item"><span>${nodes.length} top-level nodes</span></div>
         </div>
     </div>
-    <script src="${scriptUri}"></script>
+    <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
@@ -305,18 +372,55 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
     }
   }
 
+  private async _runGitDiff(
+    document: RgdDocument,
+    webviewPanel: vscode.WebviewPanel,
+    ref: string,
+  ): Promise<void> {
+    const dict = this.dictionaryManager.getDictionary(this.context);
+    const result: TableDiffResult = await diffRgdAgainstGit(
+      document.uri.fsPath,
+      dict,
+      ref,
+    );
+    if (result.error) {
+      webviewPanel.webview.postMessage({
+        type: "gitDiffError",
+        message: result.error,
+        baseRef: result.baseRef,
+      });
+      return;
+    }
+    webviewPanel.webview.postMessage({
+      type: "gitDiff",
+      baseRef: result.baseRef,
+      totalKeys: result.totalKeys,
+      entries: result.entries,
+      highlight: buildDiffHighlightMap(result.entries),
+    });
+  }
+
   private async _saveRgd(document: RgdDocument): Promise<void> {
     const rgdTable = treeToRgd(document.nodes);
     const dict = this.dictionaryManager.getDictionary(this.context);
     const backupPath = document.uri.fsPath + ".bak";
+    let wroteBackup = false;
     if (fs.existsSync(document.uri.fsPath)) {
       fs.copyFileSync(document.uri.fsPath, backupPath);
+      wroteBackup = true;
     }
     try {
       writeRgdFile(document.uri.fsPath, rgdTable, dict, document.rgdVersion);
       invalidateParsedRgdCache(document.uri.fsPath);
+      if (wroteBackup && fs.existsSync(backupPath)) {
+        try {
+          fs.unlinkSync(backupPath);
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
     } catch (writeError) {
-      if (fs.existsSync(backupPath)) {
+      if (wroteBackup && fs.existsSync(backupPath)) {
         fs.copyFileSync(backupPath, document.uri.fsPath);
       }
       throw writeError;

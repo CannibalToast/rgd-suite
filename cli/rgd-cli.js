@@ -356,14 +356,11 @@ function printParity(results, skipped, format, label) {
     if (format === 'json') {
         console.log(JSON.stringify(payload, null, 2));
     } else {
-        console.log(`${label || 'Parity'}: ${summary.checked} checked | ${summary.passed} pass | ${summary.failed} fail | ${summary.errored} error | ${summary.skipped} skipped | ${summary.parityIssues + summary.validationIssues} total issues | ${summary.fixes} fixes`);
+        console.error(`${label || 'Parity'}: ${summary.checked} checked | ${summary.passed} pass | ${summary.failed} fail | ${summary.errored} error | ${summary.skipped} skipped | ${summary.parityIssues + summary.validationIssues} total issues | ${summary.fixes} fixes`);
         for (const result of results) {
             const issueCount = (result.issues?.length || 0) + (result.validationIssues?.length || 0);
-            console.log(`[${issueCount === 0 && !result.error ? 'PASS' : 'FAIL'}] ${result.rgdFile} ↔ ${result.luaFile || '(missing lua)'} (${issueCount} issues)`);
-            if (result.error) console.log(`  ERROR: ${result.error}`);
-            for (const fix of result.fixes || []) console.log(`  FIXED ${fix.kind} ${fix.path}: ${fix.details}`);
-            for (const issue of result.issues || []) console.log(`  ${issue.kind} ${issue.key}: ${issue.details}`);
-            for (const issue of result.validationIssues || []) console.log(`  ${issue.kind} ${issue.key || issue.path}: ${issue.details}`);
+            console.error(`[${issueCount === 0 && !result.error ? 'PASS' : 'FAIL'}] ${result.rgdFile} ↔ ${result.luaFile || '(missing lua)'} (${issueCount} issues)`);
+            if (result.error) console.error(`  ERROR: ${result.error}`);
         }
     }
     if (!payload.ok) process.exitCode = 1;
@@ -436,13 +433,11 @@ async function validateTarget(target, dict, attribBase, format) {
     if (format === 'json') {
         console.log(JSON.stringify(payload, null, 2));
     } else {
-        console.log(`Validation: ${payload.summary.checked} checked | ${payload.summary.passed} pass | ${failed} fail | ${errored} error | ${validationIssues} issues | ${fixes} fixes`);
+        console.error(`Validation: ${payload.summary.checked} checked | ${payload.summary.passed} pass | ${failed} fail | ${errored} error | ${validationIssues} issues | ${fixes} fixes`);
         for (const result of results) {
             const count = (result.validationIssues?.length || 0) + (result.error ? 1 : 0);
-            console.log(`[${count === 0 ? 'PASS' : 'FAIL'}] ${result.file} (${count} issues)`);
-            if (result.error) console.log(`  ERROR: ${result.error}`);
-            for (const fix of result.fixes || []) console.log(`  FIXED ${fix.kind} ${fix.path}: ${fix.details}`);
-            for (const issue of result.validationIssues || []) console.log(`  ${issue.kind} ${issue.key || issue.path}: ${issue.details}`);
+            console.error(`[${count === 0 ? 'PASS' : 'FAIL'}] ${result.file} (${count} issues)`);
+            if (result.error) console.error(`  ERROR: ${result.error}`);
         }
     }
     if (!payload.ok) process.exitCode = 1;
@@ -459,7 +454,6 @@ const COMMANDS = {
         const text = rgdToText(rgd, path.basename(input), null);
         const out = getOpt(argv, ['-o', '--output'], input + '.txt');
         await fs.promises.writeFile(out, text, 'utf8');
-        console.log(out);
     },
 
     async 'from-text'(argv) {
@@ -477,7 +471,6 @@ const COMMANDS = {
         const versionStr = getOpt(argv, ['--version']);
         const finalVersion = versionStr ? parseInt(versionStr, 10) : version;
         writeRgdFile(out, gameData, dict, finalVersion);
-        console.log(out);
     },
 
     async 'to-lua'(argv) {
@@ -490,7 +483,6 @@ const COMMANDS = {
         const lua = await rgdToLuaDifferential(rgd, parentLoader);
         const out = getOpt(argv, ['-o', '--output'], defaultOutput(input, '.rgd', '.lua'));
         await fs.promises.writeFile(out, lua, 'utf8');
-        console.log(out);
     },
 
     async 'from-lua'(argv) {
@@ -505,7 +497,6 @@ const COMMANDS = {
         const versionStr = getOpt(argv, ['--version']);
         const finalVersion = versionStr ? parseInt(versionStr, 10) : version;
         writeRgdFile(out, gameData, dict, finalVersion);
-        console.log(out);
     },
 
     async 'info'(argv) {
@@ -624,7 +615,7 @@ const COMMANDS = {
         const workers = defaultWorkerCount(getOpt(argv, ['--workers', '-w'], '0'));
         const parentLoader = makeParentLoader(attribBase, dict);
         const files = await collectFiles(path.resolve(folder), '.rgd');
-        const results = new Array(files.length);
+        const results = Array.from({ length: files.length });
         await scheduleBatched(files, workers, async (full, index) => {
             try {
                 const rgd = readRgdFile(full, dict);
@@ -651,7 +642,7 @@ const COMMANDS = {
         const workers = defaultWorkerCount(getOpt(argv, ['--workers', '-w'], '0'));
         const rgdParent = makeRgdParentLoader(attribBase, dict);
         const files = await collectFiles(path.resolve(folder), '.lua');
-        const results = new Array(files.length);
+        const results = Array.from({ length: files.length });
         await scheduleBatched(files, workers, async (full, index) => {
             try {
                 const code = maybeStripBom(full, await fs.promises.readFile(full), []).toString('utf8');
@@ -670,34 +661,85 @@ const COMMANDS = {
         }, null, 2));
     },
 
+    async 'table-diff'(argv) {
+        const flags = VALUE_FLAGS.concat(['--ref']);
+        const [input] = positionals(argv, flags);
+        if (!input) usage('table-diff <input.rgd> [--ref HEAD] [--format json|text]');
+        const ref = getOpt(argv, ['--ref'], 'HEAD');
+        const format = getOpt(argv, ['--format'], 'text');
+        const dict = getDict(argv);
+        const abs = path.resolve(input);
+        if (!fs.existsSync(abs)) {
+            console.error('File not found:', abs);
+            process.exit(1);
+        }
+        let baseBuf;
+        try {
+            const { execFileSync } = require('child_process');
+            const root = execFileSync('git', ['-C', path.dirname(abs), 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+            const rel = path.relative(root, abs).replace(/\\/g, '/');
+            baseBuf = execFileSync('git', ['-C', root, 'show', `${ref}:${rel}`], { maxBuffer: 32 * 1024 * 1024 });
+        } catch (e) {
+            const msg = e && e.message ? e.message.split('\n')[0] : String(e);
+            console.error('git show failed:', msg);
+            process.exit(1);
+        }
+        const baseRgd = parseRgd(baseBuf, dict);
+        const curRgd = parseRgd(fs.readFileSync(abs), dict);
+
+        function flatten(table, prefix, out) {
+            out = out || new Map();
+            for (const entry of table.entries) {
+                const k = entry.name || ('#' + entry.hash.toString(16).padStart(8, '0'));
+                const full = prefix ? prefix + '.' + k : k;
+                if (entry.type === RgdDataType.Table || entry.type === RgdDataType.TableInt) {
+                    if (entry.value) flatten(entry.value, full, out);
+                } else if (entry.type === RgdDataType.Float) {
+                    out.set(full, { type: 'float', value: entry.value });
+                } else if (entry.type === RgdDataType.Integer) {
+                    out.set(full, { type: 'int', value: entry.value });
+                } else if (entry.type === RgdDataType.Bool) {
+                    out.set(full, { type: 'bool', value: entry.value });
+                } else if (entry.type === RgdDataType.String || entry.type === RgdDataType.WString) {
+                    if (k !== '$REF') out.set(full, { type: 'string', value: entry.value });
+                }
+            }
+            return out;
+        }
+        const FLOAT_EPS = 1e-4;
+        function eq(a, b) {
+            if ((a.type === 'float' || a.type === 'int') && (b.type === 'float' || b.type === 'int')) {
+                return Math.abs(a.value - b.value) <= FLOAT_EPS;
+            }
+            return a.type === b.type && a.value === b.value;
+        }
+        const baseMap = flatten(baseRgd.gameData);
+        const curMap = flatten(curRgd.gameData);
+        const entries = [];
+        for (const [key, cur] of curMap) {
+            const old = baseMap.get(key);
+            if (!old) entries.push({ kind: 'added', key, newValue: cur });
+            else if (!eq(old, cur)) entries.push({ kind: 'changed', key, oldValue: old, newValue: cur });
+        }
+        for (const [key, old] of baseMap) {
+            if (!curMap.has(key)) entries.push({ kind: 'removed', key, oldValue: old });
+        }
+        entries.sort((a, b) => a.key.localeCompare(b.key));
+        const result = { file: abs, baseRef: ref, totalKeys: curMap.size, changes: entries.length, entries };
+        if (format === 'json') {
+            console.log(JSON.stringify(result, null, 2));
+        } else {
+            for (const e of entries) {
+                if (e.kind === 'changed') {
+                } else if (e.kind === 'added') {
+                } else {
+                }
+            }
+        }
+        if (entries.length) process.exitCode = 1;
+    },
+
     async 'help'() {
-        console.log(`
-RGD Suite CLI — standalone command-line interface
-Usage: rgd <command> [args...] [options]
-
-Commands:
-  to-text      <input.rgd> [-o output.txt]              Convert RGD to text
-  from-text    <input.rgd.txt> [-o output.rgd]          Convert text to RGD
-  to-lua       <input.rgd> [-o output.lua] [-a base]    Convert RGD to Lua
-  from-lua     <input.lua> [-o output.rgd] [-a base]    Convert Lua to RGD
-  info         <input.rgd>                              Show RGD file info (JSON)
-  hash         <string>                                 Calculate RGD hash (JSON)
-  extract-sga  <archive.sga> <outputFolder>             Extract RGDs from SGA
-  validate     <file|folder> [--format json] [-a base]   Validate paths, BOMs, references
-  parity       <input.rgd|input.lua> [--format json]     Check RGD/Lua parity
-  parity-batch <folder> [--format json] [-a base] [--workers N]  Batch parity check
-  batch-to-lua <folder> [-a base] [--workers N]                  Batch convert folder
-  batch-to-rgd <folder> [-a base] [--workers N]                  Batch compile folder
-
-Global options:
-  -d, --dictionary <paths>  Colon-separated dictionary paths
-  --workers, -w <N>         Concurrent jobs for batch commands (0 = auto, cap 4)
-  --format <json|text>      Output format for parity commands
-  --version <1|3>           RGD version for from-text / from-lua
-
-Environment:
-  RGD_SUITE_DICT            Default dictionary path(s)
-`.trimEnd());
     }
 };
 

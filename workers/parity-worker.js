@@ -23,7 +23,6 @@ const {
     isNilReference,
 } = require(path.join(__dirname, '..', 'cli', 'validators.js'));
 
-// Load dictionary once per worker
 const dict = createAndLoadDictionaries(workerData.dictPaths || []);
 
 const FLOAT_EPSILON         = 1e-4;
@@ -48,7 +47,6 @@ function findAttribBase(filePath) {
     const dir = path.dirname(filePath);
     if (attribBaseCache.has(dir)) {
         const v = attribBaseCache.get(dir);
-        // LRU touch
         attribBaseCache.delete(dir);
         attribBaseCache.set(dir, v);
         return v;
@@ -121,7 +119,9 @@ function flattenRgd(table, prefix, out) {
             case RgdDataType.WString:
                 if (k === '$REF') break;
                 out.set(full, { type: 'string', value: entry.value }); break;
-            case RgdDataType.NoData:  out.set(full, { type: 'nil', value: null }); break;
+            // NoData = "delete inherited value"; omitting the key in Lua is
+            // the correct representation. Skip to avoid false missing_in_lua.
+            case RgdDataType.NoData:  break;
         }
     }
     return out;

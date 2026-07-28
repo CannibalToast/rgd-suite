@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { parseRgd } from "../bundled/rgd-tools/dist/reader";
 import { rgdToText } from "../bundled/rgd-tools/dist/textFormat";
-import { HashDictionary, RgdFile, LocaleEntry } from "../bundled/rgd-tools/dist/types";
+import { HashDictionary, RgdFile } from "../bundled/rgd-tools/dist/types";
 import { rgdToTree, RgdNode, resolveNodePaths } from "./rgdTable";
 import { LocaleManager } from "./localeManager";
 import { findAttribBase } from "./attribUtils";

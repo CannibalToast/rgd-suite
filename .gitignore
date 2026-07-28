@@ -3,3 +3,11 @@ node_modules/
 bundled/**/node_modules/
 *.vsix
 *.js.map
+RGD
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.*
+.devin/
+.vsix

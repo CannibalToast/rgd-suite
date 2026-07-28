@@ -13,7 +13,6 @@ export class RgdFileSystemProvider implements vscode.FileSystemProvider {
     this._emitter.event;
 
   constructor(private readonly context: vscode.ExtensionContext) {
-    console.log("[RGD FS] Initialized");
   }
 
   toRealPath(uri: vscode.Uri): string {

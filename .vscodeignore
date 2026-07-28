@@ -13,9 +13,24 @@ node_modules/**
 build-vsix.ps1
 **/*.md
 !README.md
+!LICENSE
 .eslintrc*
 !dictionaries/**
 bundled/**/node_modules/**
+
+# Local reference material / third-party binaries — never ship in VSIX
+RGD/**
+RGD
+
+# CI metadata — not needed at runtime
+.github/**
+
+# Devin agent workspace / debug artifacts — not shipped
+.devin/**
+
+# Unused upstream CLI (extension uses cli/rgd-cli.js)
+bundled/rgd-tools/dist/cli.js
+bundled/rgd-tools/dist/cli.d.ts
 
 # Explicitly ship the standalone CLI and setup script
 !cli/**

@@ -354,14 +354,33 @@ class SgaArchive {
      * Extract all files matching a pattern
      */
     extractFiles(outputDir, pattern) {
+        const pathMod = require('path');
         const files = this.listFiles(pattern);
         const extracted = [];
+        const resolvedBase = pathMod.resolve(outputDir);
         for (const fileInfo of files) {
             try {
+                const rel = String(fileInfo.path || '').replace(/\\/g, '/');
+                // Reject absolute paths and directory traversal (zip-slip).
+                if (!rel || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel) || rel.includes('\0')) {
+                    console.error(`Skipping unsafe archive path: ${fileInfo.path}`);
+                    continue;
+                }
+                const parts = rel.split('/').filter((p) => p && p !== '.');
+                if (parts.some((p) => p === '..')) {
+                    console.error(`Skipping path traversal entry: ${fileInfo.path}`);
+                    continue;
+                }
+                const outputPath = pathMod.resolve(resolvedBase, ...parts);
+                const baseWithSep = resolvedBase.endsWith(pathMod.sep)
+                    ? resolvedBase
+                    : resolvedBase + pathMod.sep;
+                if (outputPath !== resolvedBase && !outputPath.startsWith(baseWithSep)) {
+                    console.error(`Skipping out-of-bounds extract: ${fileInfo.path}`);
+                    continue;
+                }
                 const data = this.extractFile(fileInfo.path);
-                const outputPath = `${outputDir}/${fileInfo.path.replace(/\\/g, '/')}`;
-                // Create directory structure
-                const dir = outputPath.substring(0, outputPath.lastIndexOf('/'));
+                const dir = pathMod.dirname(outputPath);
                 fs.mkdirSync(dir, { recursive: true });
                 fs.writeFileSync(outputPath, data);
                 extracted.push(outputPath);

@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Package VSIX
+        run: npx vsce package --no-dependencies
+
+      - name: Assert VSIX does not ship RGD reference tree
+        shell: pwsh
+        run: |
+          $vsix = Get-ChildItem -Filter "rgd-suite-*.vsix" | Where-Object { $_.Name -notlike "*latest*" } | Select-Object -First 1
+          if (-not $vsix) { throw "No VSIX produced" }
+          $sizeMb = [math]::Round($vsix.Length / 1MB, 2)
+          Write-Host "VSIX: $($vsix.Name) size=${sizeMb}MB"
+          if ($vsix.Length -gt 2MB) {
+            throw "VSIX is ${sizeMb}MB — too large (likely shipping RGD/ or other junk). Cap is 2MB."
+          }
+          $tmp = Join-Path $env:TEMP "vsix-ci-check"
+          if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+          Expand-Archive -Path $vsix.FullName -DestinationPath $tmp -Force
+          if (Test-Path (Join-Path $tmp "extension/RGD")) {
+            throw "VSIX contains extension/RGD — add RGD/** to .vscodeignore"
+          }
+          if (-not (Test-Path (Join-Path $tmp "extension/LICENSE"))) {
+            Write-Warning "LICENSE missing from VSIX (non-fatal)"
+          }
+          Write-Host "Package content check OK"

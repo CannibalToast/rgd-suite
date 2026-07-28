@@ -169,7 +169,7 @@ export function collectFiles(folder: string, ext: string): string[] {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
+    } catch {
       return;
     }
     for (const e of entries) {

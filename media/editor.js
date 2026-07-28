@@ -1,19 +1,36 @@
 (function () {
-    const vscode = acquireVsCodeApi();
+    // VS Code injects this into webviews; access via globalThis for static analyzers.
+    const vscode = globalThis['acquireVsCodeApi']();
     let rgdData = null;
     let selectedNode = null;
     let selectedRow = null;
-    let isDirty = false;
+    let documentDirty = false;
     const nodeRegistry = new Map();
+    /** @type {Record<string, string>} key path -> added|removed|changed */
+    let diffHighlight = {};
 
     function init() {
         vscode.postMessage({ type: 'ready' });
 
-        // Save button handler
         const saveBtn = document.getElementById('save-btn');
         if (saveBtn) {
             saveBtn.addEventListener('click', function () {
                 vscode.postMessage({ type: 'save' });
+            });
+        }
+
+        const gitDiffBtn = document.getElementById('git-diff-btn');
+        if (gitDiffBtn) {
+            gitDiffBtn.addEventListener('click', function () {
+                updateStatus('Loading git diff…');
+                vscode.postMessage({ type: 'requestGitDiff', ref: 'HEAD' });
+            });
+        }
+
+        const diffClose = document.getElementById('diff-close');
+        if (diffClose) {
+            diffClose.addEventListener('click', function () {
+                clearDiffUi();
             });
         }
 
@@ -82,6 +99,7 @@
         if (msg.type === 'loadData') {
             rgdData = msg.data;
             renderTree(rgdData);
+            if (Object.keys(diffHighlight).length) applyTreeDiffHighlights();
             updateStatus('Loaded ' + (rgdData ? rgdData.length : 0) + ' nodes');
         } else if (msg.type === 'loadChildren') {
             mergeChildren(rgdData, msg.path, msg.children);
@@ -92,13 +110,165 @@
                 const parentData = getNodeAtPath(rgdData, msg.path);
                 if (parent && parentData) {
                     fillChildren(parent, parentData, msg.path, parent.querySelector('.tree-children'), msg.path.length);
+                    if (Object.keys(diffHighlight).length) applyTreeDiffHighlights();
                 }
             }
         } else if (msg.type === 'saved') {
-            isDirty = false;
+            documentDirty = false;
             updateStatus('Saved');
+            const saveBtn = document.getElementById('save-btn');
+            if (saveBtn) saveBtn.classList.remove('dirty');
+        } else if (msg.type === 'gitDiff') {
+            showGitDiff(msg);
+        } else if (msg.type === 'gitDiffError') {
+            clearDiffUi();
+            updateStatus('Git diff: ' + (msg.message || 'failed'));
+            const ds = document.getElementById('diff-status');
+            if (ds) ds.textContent = '';
         }
     });
+
+    function clearDiffUi() {
+        diffHighlight = {};
+        document.querySelectorAll('.tree-row.diff-added, .tree-row.diff-removed, .tree-row.diff-changed')
+            .forEach(function (el) {
+                el.classList.remove('diff-added', 'diff-removed', 'diff-changed');
+            });
+        const panel = document.getElementById('diff-panel');
+        if (panel) panel.hidden = true;
+        const ds = document.getElementById('diff-status');
+        if (ds) ds.textContent = '';
+    }
+
+    function showGitDiff(msg) {
+        diffHighlight = msg.highlight || {};
+        const entries = msg.entries || [];
+        const panel = document.getElementById('diff-panel');
+        const content = document.getElementById('diff-content');
+        const header = document.getElementById('diff-header-text');
+        if (header) {
+            header.textContent = 'Git Diff vs ' + (msg.baseRef || 'HEAD') +
+                ' — ' + entries.length + ' change' + (entries.length === 1 ? '' : 's');
+        }
+        if (content) {
+            content.replaceChildren();
+            if (entries.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'empty-state';
+                empty.textContent = 'No differences vs ' + (msg.baseRef || 'HEAD');
+                content.appendChild(empty);
+            } else {
+                entries.forEach(function (entry) {
+                    content.appendChild(createDiffRow(entry));
+                });
+            }
+        }
+        if (panel) panel.hidden = false;
+        applyTreeDiffHighlights();
+        const ds = document.getElementById('diff-status');
+        if (ds) {
+            ds.textContent = entries.length + ' Δ vs ' + (msg.baseRef || 'HEAD');
+        }
+        updateStatus('Git diff ready (' + entries.length + ' changes)');
+    }
+
+    function createDiffRow(entry) {
+        const row = document.createElement('div');
+        row.className = 'diff-row diff-' + entry.kind;
+        row.title = 'Click to jump in tree';
+        const kind = document.createElement('span');
+        kind.className = 'diff-kind';
+        kind.textContent = entry.kind === 'added' ? '+' : entry.kind === 'removed' ? '−' : '~';
+        const keyEl = document.createElement('span');
+        keyEl.className = 'diff-key';
+        keyEl.textContent = entry.key;
+        const valEl = document.createElement('span');
+        valEl.className = 'diff-vals';
+        if (entry.kind === 'changed') {
+            valEl.textContent = formatScalar(entry.oldValue) + ' → ' + formatScalar(entry.newValue);
+        } else if (entry.kind === 'added') {
+            valEl.textContent = formatScalar(entry.newValue);
+        } else {
+            valEl.textContent = formatScalar(entry.oldValue);
+        }
+        row.appendChild(kind);
+        row.appendChild(keyEl);
+        row.appendChild(valEl);
+        row.addEventListener('click', function () {
+            jumpToKeyPath(entry.key);
+        });
+        return row;
+    }
+
+    function formatScalar(s) {
+        if (!s) return '';
+        if (typeof s.value === 'string') return JSON.stringify(s.value);
+        return String(s.value);
+    }
+
+    function jumpToKeyPath(keyPath) {
+        if (!rgdData || !keyPath) return;
+        const parts = keyPath.split('.');
+        let list = rgdData;
+        const idxPath = [];
+        for (let i = 0; i < parts.length; i++) {
+            if (!list) return;
+            const want = parts[i];
+            let found = -1;
+            for (let j = 0; j < list.length; j++) {
+                const n = list[j];
+                if ((n.key || n.name) === want) {
+                    found = j;
+                    break;
+                }
+            }
+            if (found < 0) return;
+            idxPath.push(found);
+            // Expand ancestors
+            const nodeEl = document.querySelector('[data-path="' + idxPath.join('.') + '"]');
+            if (nodeEl) {
+                const treeNode = nodeEl.closest('.tree-node');
+                const toggle = nodeEl.querySelector('.tree-toggle');
+                const nodeData = getNodeAtPath(rgdData, idxPath);
+                if (treeNode && toggle && nodeData && (nodeData.hasChildren || (nodeData.children && nodeData.children.length))) {
+                    const kids = treeNode.querySelector('.tree-children');
+                    if (kids && !kids.classList.contains('expanded')) {
+                        toggleExpand(treeNode, toggle, nodeData, idxPath.slice(), idxPath.length - 1);
+                    }
+                }
+            }
+            const cur = list[found];
+            list = cur && cur.children ? cur.children : null;
+        }
+        const leaf = getNodeAtPath(rgdData, idxPath);
+        if (leaf) selectNode(leaf, idxPath);
+        const row = nodeRegistry.get(idxPath.join('.'));
+        if (row) row.scrollIntoView({ block: 'center' });
+    }
+
+    function applyTreeDiffHighlights() {
+        document.querySelectorAll('.tree-row').forEach(function (row) {
+            row.classList.remove('diff-added', 'diff-removed', 'diff-changed');
+            const kp = row.dataset.keyPath;
+            if (kp && diffHighlight[kp]) {
+                row.classList.add('diff-' + diffHighlight[kp]);
+            }
+        });
+    }
+
+    function computeKeyPath(node, path) {
+        // Rebuild dotted key path from root using node keys
+        if (!rgdData || !path || !path.length) return node.key || node.name || '';
+        const parts = [];
+        let list = rgdData;
+        for (let i = 0; i < path.length; i++) {
+            const n = list[path[i]];
+            if (!n) break;
+            parts.push(n.key || n.name || '');
+            list = n.children || [];
+        }
+        return parts.join('.');
+    }
 
     function mergeChildren(nodes, nodePath, children) {
         const parent = getNodeAtPath(nodes, nodePath);
@@ -118,7 +288,7 @@
 
     function fillChildren(nodeEl, node, path, childrenDiv, depth) {
         if (!childrenDiv || !node.children) return;
-        childrenDiv.innerHTML = '';
+        childrenDiv.replaceChildren();
         node.children.forEach(function (child, idx) {
             childrenDiv.appendChild(createTreeNode(child, path.concat([idx]), depth + 1));
         });
@@ -129,10 +299,15 @@
         selectedRow = null;
         const treeContent = document.getElementById('tree-content');
         if (!treeContent) return;
-        treeContent.innerHTML = '';
+        treeContent.replaceChildren();
 
         if (!nodes || nodes.length === 0) {
-            treeContent.innerHTML = '<div class="empty-state"><div>No data</div></div>';
+            const empty = document.createElement('div');
+            empty.className = 'empty-state';
+            const inner = document.createElement('div');
+            inner.textContent = 'No data';
+            empty.appendChild(inner);
+            treeContent.appendChild(empty);
             return;
         }
 
@@ -161,6 +336,11 @@
         // Use dot-joined path as the DOM key — faster than JSON.stringify
         // and still unique because path is a numeric index array.
         row.dataset.path = path.join('.');
+        const keyPath = computeKeyPath(node, path);
+        row.dataset.keyPath = keyPath;
+        if (diffHighlight[keyPath]) {
+            row.classList.add('diff-' + diffHighlight[keyPath]);
+        }
         nodeRegistry.set(row.dataset.path, row);
 
         const toggle = document.createElement('span');
@@ -175,9 +355,14 @@
         const label = document.createElement('span');
         label.className = 'tree-label';
 
-        // For $REF nodes, make the label a clickable hyperlink showing the ref path
         if (isRefNode && node.value) {
-            label.innerHTML = '<a href="#" class="tree-ref-link" data-ref="' + esc(node.value) + '" title="Click to open: ' + esc(node.value) + '">' + esc(nodeName) + '</a>';
+            const a = document.createElement('a');
+            a.href = '#';
+            a.className = 'tree-ref-link';
+            a.dataset.ref = String(node.value);
+            a.title = 'Click to open: ' + String(node.value);
+            a.textContent = nodeName;
+            label.appendChild(a);
         } else {
             label.textContent = nodeName;
         }
@@ -254,19 +439,109 @@
         renderPropertyGrid(node);
     }
 
+    function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text != null && text !== '') node.textContent = text;
+        return node;
+    }
+
+    function makeRefLink(refPath) {
+        const a = el('a', 'ref-link');
+        a.href = '#';
+        a.dataset.ref = String(refPath);
+        a.title = 'Click to open';
+        a.textContent = String(refPath);
+        a.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            vscode.postMessage({ type: 'openRef', ref: a.dataset.ref });
+        });
+        return a;
+    }
+
+    function makeEditableInput(opts) {
+        const input = document.createElement('input');
+        input.className = 'property-input editable-value';
+        input.type = opts.inputType;
+        input.dataset.path = opts.pathKey;
+        if (opts.keyName) input.dataset.key = opts.keyName;
+        if (opts.dataType) input.dataset.type = opts.dataType;
+        if (opts.inputType === 'checkbox') {
+            input.checked = !!opts.value;
+        } else {
+            input.value = opts.value == null ? '' : String(opts.value);
+        }
+        if (opts.step) input.step = opts.step;
+        input.addEventListener('change', function () {
+            const path = input.dataset.path.split('.').map(Number);
+            const key = input.dataset.key || null;
+            let value;
+            if (input.type === 'checkbox') value = input.checked;
+            else if (input.type === 'number') {
+                value = input.step === 'any' ? parseFloat(input.value) : parseInt(input.value, 10);
+            } else value = input.value;
+            vscode.postMessage({ type: 'updateValue', path: path, key: key, value: value });
+            markDirty();
+        });
+        return input;
+    }
+
+    function makePropRow(name, valueNode) {
+        const tr = el('tr', 'property-row');
+        tr.appendChild(el('td', 'property-name', name));
+        const td = el('td', 'property-value');
+        if (typeof valueNode === 'string') td.textContent = valueNode;
+        else if (valueNode) td.appendChild(valueNode);
+        tr.appendChild(td);
+        return tr;
+    }
+
+    function makeCollapsibleSection(title, contentId, bodyBuild, refPath) {
+        const section = el('div', 'collapsible-section');
+        const headTable = el('table', 'property-grid');
+        const headTr = el('tr', 'section-header collapsible-header');
+        headTr.dataset.target = contentId;
+        const headTd = document.createElement('td');
+        if (!refPath) headTd.colSpan = 2;
+        const icon = el('span', 'collapse-icon', '▼');
+        headTd.appendChild(icon);
+        headTd.appendChild(document.createTextNode(' ' + title));
+        headTr.appendChild(headTd);
+        if (refPath) {
+            const refTd = el('td', 'section-ref');
+            refTd.appendChild(makeRefLink(refPath));
+            headTr.appendChild(refTd);
+        }
+        headTr.addEventListener('click', function (e) {
+            if (e.target.classList && e.target.classList.contains('ref-link')) return;
+            const targetEl = document.getElementById(contentId);
+            if (targetEl) {
+                targetEl.classList.toggle('collapsed');
+                icon.textContent = targetEl.classList.contains('collapsed') ? '▶' : '▼';
+            }
+        });
+        headTable.appendChild(headTr);
+        section.appendChild(headTable);
+        const body = el('div', 'collapsible-content');
+        body.id = contentId;
+        const bodyTable = el('table', 'property-grid');
+        bodyBuild(bodyTable);
+        body.appendChild(bodyTable);
+        section.appendChild(body);
+        return section;
+    }
+
     function renderPropertyGrid(node) {
         const content = document.getElementById('property-content');
         if (!content) return;
 
         const header = document.getElementById('property-header-text');
-        if (header) {
-            header.textContent = 'PROPERTIES';
-        }
+        if (header) header.textContent = 'PROPERTIES';
 
         const hasChildren = node.children && node.children.length > 0;
         const isTable = hasChildren;
 
-        // Find $REF child if it exists
         let refValue = null;
         if (node.children) {
             const refChild = node.children.find(function (c) {
@@ -275,160 +550,113 @@
             if (refChild) refValue = refChild.value;
         }
 
-        // Determine data type
         let dataType = 'Unknown';
-        if (isTable) {
-            dataType = 'Table';
-        } else if (node.value !== undefined) {
+        if (isTable) dataType = 'Table';
+        else if (node.value !== undefined) {
             const t = typeof node.value;
             if (t === 'boolean') dataType = 'Boolean';
             else if (t === 'number') dataType = Number.isInteger(node.value) ? 'Integer' : 'Float';
             else if (t === 'string') {
-                if (node.value.startsWith('$')) dataType = 'DoW UCS Ref';
-                else dataType = 'String';
+                dataType = node.value.startsWith('$') ? 'DoW UCS Ref' : 'String';
             }
         }
 
-        let html = '';
         const nodePath = selectedNode ? selectedNode.path : [];
+        content.replaceChildren();
 
-        // === PROPERTIES SECTION with Reference in header ===
-        html += '<div class="collapsible-section" data-section="properties">';
-        html += '<table class="property-grid">';
+        content.appendChild(makeCollapsibleSection(
+            'Properties',
+            'properties-content',
+            function (table) {
+                table.appendChild(makePropRow('Name', node.key || node.name || 'Unknown'));
+                if (!isTable && node.value !== undefined && node.value !== null) {
+                    const inputType = dataType === 'Boolean'
+                        ? 'checkbox'
+                        : (dataType === 'Integer' || dataType === 'Float' ? 'number' : 'text');
+                    const wrap = document.createElement('div');
+                    wrap.appendChild(makeEditableInput({
+                        inputType: inputType,
+                        pathKey: nodePath.join('.'),
+                        dataType: dataType,
+                        value: node.value,
+                        step: dataType === 'Float' ? 'any' : undefined,
+                    }));
+                    if (node.localeText) {
+                        const loc = el('div', null, node.localeText);
+                        loc.style.opacity = '0.6';
+                        loc.style.fontSize = '11px';
+                        loc.style.marginTop = '2px';
+                        wrap.appendChild(loc);
+                    }
+                    table.appendChild(makePropRow(dataType, wrap));
+                } else if (isTable) {
+                    table.appendChild(makePropRow('Data Type', dataType));
+                }
+            },
+            refValue || undefined,
+        ));
 
-        // Header row: clickable to collapse/expand, with reference link on the right
-        if (refValue) {
-            html += '<tr class="section-header collapsible-header" data-target="properties-content"><td><span class="collapse-icon">▼</span> Properties</td><td class="section-ref"><a href="#" class="ref-link" data-ref="' + esc(refValue) + '" title="Click to open">' + esc(refValue) + '</a></td></tr>';
-        } else {
-            html += '<tr class="section-header collapsible-header" data-target="properties-content"><td colspan="2"><span class="collapse-icon">▼</span> Properties</td></tr>';
-        }
-
-        html += '</table>';
-        html += '<div class="collapsible-content" id="properties-content">';
-        html += '<table class="property-grid">';
-
-        // Name row
-        html += '<tr class="property-row"><td class="property-name">Name</td><td class="property-value">' + esc(node.key || node.name || 'Unknown') + '</td></tr>';
-
-        // Data Type / Value merged: use dataType as label, show editable value
-        if (!isTable && node.value !== undefined && node.value !== null) {
-            const inputType = dataType === 'Boolean' ? 'checkbox' : (dataType === 'Integer' || dataType === 'Float' ? 'number' : 'text');
-            const inputValue = dataType === 'Boolean' ? (node.value ? ' checked' : '') : ' value="' + esc(String(node.value)) + '"';
-            const inputStep = dataType === 'Float' ? ' step="any"' : '';
-            html += '<tr class="property-row"><td class="property-name">' + dataType + '</td><td class="property-value">';
-            html += '<input type="' + inputType + '" class="property-input editable-value" data-path="' + esc(nodePath.join('.')) + '" data-type="' + dataType + '"' + inputValue + inputStep + '>';
-            if (node.localeText) {
-                html += '<div style="opacity:0.6;font-size:11px;margin-top:2px;">' + esc(node.localeText) + '</div>';
-            }
-            html += '</td></tr>';
-        } else if (isTable) {
-            html += '<tr class="property-row"><td class="property-name">Data Type</td><td class="property-value">' + dataType + '</td></tr>';
-        }
-
-        html += '</table>';
-        html += '</div></div>';
-
-        // === TABLE CHILDREN SECTION (only for tables) ===
         if (hasChildren) {
-            // Filter out $REF and reference-only children (children that only have a $REF)
             const visibleChildren = node.children.filter(function (child) {
-                if (child.key === '$REF' || child.name === '$REF') return false;
-                return true;
+                return child.key !== '$REF' && child.name !== '$REF';
             });
-
             if (visibleChildren.length > 0) {
-                html += '<div class="collapsible-section" data-section="children" style="margin-top:12px;">';
-                html += '<table class="property-grid">';
-                html += '<tr class="section-header collapsible-header" data-target="children-content"><td colspan="2"><span class="collapse-icon">▼</span> Table Children</td></tr>';
-                html += '</table>';
-                html += '<div class="collapsible-content" id="children-content">';
-                html += '<table class="property-grid">';
-
-                visibleChildren.forEach(function (child, idx) {
-                    const childName = child.key || child.name || 'Unknown';
-                    let childValue = '';
-
-                    // Find $REF in child if it exists
-                    let childRef = null;
-                    if (child.children) {
-                        const refChild = child.children.find(function (c) {
-                            return c.key === '$REF' || c.name === '$REF';
+                const childrenSection = makeCollapsibleSection(
+                    'Table Children',
+                    'children-content',
+                    function (table) {
+                        visibleChildren.forEach(function (child, idx) {
+                            const childName = child.key || child.name || 'Unknown';
+                            let childRef = null;
+                            if (child.children) {
+                                const refChild = child.children.find(function (c) {
+                                    return c.key === '$REF' || c.name === '$REF';
+                                });
+                                if (refChild) childRef = refChild.value;
+                            }
+                            let valueNode = null;
+                            if (childRef) {
+                                valueNode = makeRefLink(childRef);
+                            } else if (child.value !== undefined && child.value !== null) {
+                                const cType = typeof child.value;
+                                const wrap = document.createElement('div');
+                                wrap.appendChild(makeEditableInput({
+                                    inputType: cType === 'boolean' ? 'checkbox' : (cType === 'number' ? 'number' : 'text'),
+                                    pathKey: nodePath.concat([idx]).join('.'),
+                                    keyName: childName,
+                                    value: child.value,
+                                }));
+                                if (child.localeText) {
+                                    const loc = el('div', null, child.localeText);
+                                    loc.style.opacity = '0.6';
+                                    loc.style.fontSize = '11px';
+                                    loc.style.marginTop = '2px';
+                                    wrap.appendChild(loc);
+                                }
+                                valueNode = wrap;
+                            } else if (child.children && child.children.length > 0) {
+                                const span = el('span', null, '[' + child.children.length + ' items]');
+                                span.style.opacity = '0.6';
+                                valueNode = span;
+                            }
+                            table.appendChild(makePropRow(childName, valueNode));
                         });
-                        if (refChild) childRef = refChild.value;
-                    }
-
-                    if (childRef) {
-                        childValue = '<a href="#" class="ref-link" data-ref="' + esc(childRef) + '" title="Click to open">' + esc(childRef) + '</a>';
-                    } else if (child.value !== undefined && child.value !== null) {
-                        // Editable input for child values
-                        const childPath = nodePath.concat([idx]);
-                        const cType = typeof child.value;
-                        const cInputType = cType === 'boolean' ? 'checkbox' : (cType === 'number' ? 'number' : 'text');
-                        const cInputValue = cType === 'boolean' ? (child.value ? ' checked' : '') : ' value="' + esc(String(child.value)) + '"';
-                        childValue = '<input type="' + cInputType + '" class="property-input editable-value" data-path="' + esc(childPath.join('.')) + '" data-key="' + esc(childName) + '"' + cInputValue + '>';
-                        if (child.localeText) {
-                            childValue += '<div style="opacity:0.6;font-size:11px;margin-top:2px;">' + esc(child.localeText) + '</div>';
-                        }
-                    } else if (child.children && child.children.length > 0) {
-                        childValue = '<span style="opacity:0.6;">[' + child.children.length + ' items]</span>';
-                    }
-
-                    html += '<tr class="property-row"><td class="property-name">' + esc(childName) + '</td><td class="property-value">' + childValue + '</td></tr>';
-                });
-
-                html += '</table>';
-                html += '</div></div>';
+                    },
+                );
+                childrenSection.style.marginTop = '12px';
+                content.appendChild(childrenSection);
             }
         }
-
-        content.innerHTML = html;
-
-        // Add click handlers for collapsible headers
-        content.querySelectorAll('.collapsible-header').forEach(function (header) {
-            header.addEventListener('click', function (e) {
-                if (e.target.classList.contains('ref-link')) return; // Don't collapse when clicking ref link
-                const targetId = header.dataset.target;
-                const targetEl = document.getElementById(targetId);
-                const icon = header.querySelector('.collapse-icon');
-                if (targetEl) {
-                    targetEl.classList.toggle('collapsed');
-                    icon.textContent = targetEl.classList.contains('collapsed') ? '▶' : '▼';
-                }
-            });
-        });
-
-        // Add click handlers for ref links
-        content.querySelectorAll('.ref-link').forEach(function (link) {
-            link.addEventListener('click', function (e) {
-                e.preventDefault();
-                e.stopPropagation();
-                vscode.postMessage({ type: 'openRef', ref: link.dataset.ref });
-            });
-        });
-
-        // Add change handlers for editable inputs
-        content.querySelectorAll('.editable-value').forEach(function (input) {
-            input.addEventListener('change', function () {
-                const path = input.dataset.path.split('.').map(Number);
-                const key = input.dataset.key || null;
-                let value;
-                if (input.type === 'checkbox') {
-                    value = input.checked;
-                } else if (input.type === 'number') {
-                    value = input.step === 'any' ? parseFloat(input.value) : parseInt(input.value, 10);
-                } else {
-                    value = input.value;
-                }
-                vscode.postMessage({ type: 'updateValue', path: path, key: key, value: value });
-                markDirty();
-            });
-        });
     }
 
     function markDirty() {
-        isDirty = true;
+        documentDirty = true;
         const status = document.getElementById('status-text');
-        if (status) status.textContent = 'Modified (unsaved)';
+        if (status) {
+            status.textContent = documentDirty ? 'Modified (unsaved)' : 'Ready';
+        }
+        const saveBtn = document.getElementById('save-btn');
+        if (saveBtn) saveBtn.classList.add('dirty');
     }
 
     function expandNodeDeep(nodeEl, nodeData, nodePath, depth) {
@@ -462,15 +690,6 @@
             if (idx < kids.length) requestAnimationFrame(expandNextBatch);
         }
         requestAnimationFrame(expandNextBatch);
-    }
-
-    function esc(text) {
-        if (text === null || text === undefined) return '';
-        return String(text)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
     }
 
     function updateStatus(text) {

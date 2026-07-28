@@ -57,6 +57,11 @@ $global:RgdCli = Join-Path $global:RgdSuiteHome 'cli' 'rgd-cli.js'
 
 function global:rgd { & node $global:RgdCli @args }
 
+function global:rgd-table-diff {
+    param([Parameter(Mandatory=$true, Position=0)][string]$Path)
+    & node $global:RgdCli table-diff $Path @args
+}
+
 function global:rgd-toText {
     param(
         [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]

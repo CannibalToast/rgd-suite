@@ -2,7 +2,7 @@
   "name": "rgd-suite",
   "displayName": "RGD Suite",
   "description": "Corsix, but for VS Code! Complete toolkit for Relic Game Data (RGD) files — table editor, Lua↔RGD conversion, SGA extraction, parity checker, and CLI commands for Dawn of War / Company of Heroes modding.",
-  "version": "1.2.2",
+  "version": "1.4.0",
   "publisher": "CannibalToast",
   "repository": {
     "type": "git",
@@ -195,6 +195,146 @@
         "command": "rgdEditor.openPowerShellSetup",
         "title": "Open PowerShell Terminal with CLI",
         "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.showGitTableDiff",
+        "title": "Show Git Table Diff",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.cloneFile",
+        "title": "Clone / Copy As…",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.openCounterpart",
+        "title": "Open Counterpart (RGD ↔ Lua ↔ Text)",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.openPairSideBySide",
+        "title": "Open RGD + Lua Side by Side",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.openParentReference",
+        "title": "Open Parent Reference()",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.findReferencesToFile",
+        "title": "Find Files That Reference This",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.searchKeyInFolder",
+        "title": "Search Key in Folder…",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.copyAttribPath",
+        "title": "Copy Attrib-Relative Path",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.copyDataAttribPath",
+        "title": "Copy data/attrib/… Path",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.copyAbsolutePath",
+        "title": "Copy Absolute Path",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.copyFileName",
+        "title": "Copy File Name",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.copyFileStem",
+        "title": "Copy File Stem (no extension)",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.copyHash",
+        "title": "Copy RGD Hash…",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.copyReferenceSnippet",
+        "title": "Copy Reference() / Inherit Snippet",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.copyFileInfo",
+        "title": "Copy File Info as JSON",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.revealAttribRoot",
+        "title": "Reveal Attrib Root in Explorer",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.convertSelectionToLua",
+        "title": "Convert Selection → Lua",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.convertSelectionToRgd",
+        "title": "Convert Selection → RGD",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.convertSelectionToText",
+        "title": "Convert Selection → Text",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.stripBom",
+        "title": "Strip UTF-8 BOM",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.renamePair",
+        "title": "Rename Pair + Update References…",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.compareTwoRgd",
+        "title": "Compare Two RGD Tables…",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.newRgdFromTemplate",
+        "title": "New Minimal RGD…",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.quickDigest",
+        "title": "Quick Digest (Info Dump)",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.compileAndOpen",
+        "title": "Compile Lua → RGD and Open",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.dumpLuaAndOpen",
+        "title": "Dump to Lua (and Open)",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.refreshCaches",
+        "title": "Refresh RGD Caches",
+        "category": "RGD Suite"
+      },
+      {
+        "command": "rgdSuite.findFilesByName",
+        "title": "Find Files by Name Pattern…",
+        "category": "RGD Suite"
       }
     ],
     "submenus": [
@@ -202,6 +342,21 @@
         "id": "rgdSuite.explorerContext",
         "label": "RGD Suite",
         "icon": "$(database)"
+      },
+      {
+        "id": "rgdSuite.explorerCopy",
+        "label": "Copy…",
+        "icon": "$(copy)"
+      },
+      {
+        "id": "rgdSuite.explorerNavigate",
+        "label": "Navigate…",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "id": "rgdSuite.explorerTools",
+        "label": "Tools…",
+        "icon": "$(tools)"
       }
     ],
     "menus": {
@@ -216,107 +371,292 @@
         {
           "when": "resourceExtname == .rgd",
           "command": "rgdEditor.openRgd",
-          "group": "open@1"
+          "group": "1_open@1"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgdEditor.openRgdText",
-          "group": "open@2"
+          "group": "1_open@2"
+        },
+        {
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
+          "command": "rgdSuite.openCounterpart",
+          "group": "1_open@3"
+        },
+        {
+          "when": "resourceExtname == .rgd || resourceExtname == .lua",
+          "command": "rgdSuite.openPairSideBySide",
+          "group": "1_open@4"
+        },
+        {
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
+          "command": "rgdSuite.cloneFile",
+          "group": "1_open@5"
+        },
+        {
+          "submenu": "rgdSuite.explorerNavigate",
+          "group": "2_nav@1",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/ || explorerResourceIsFolder"
+        },
+        {
+          "submenu": "rgdSuite.explorerCopy",
+          "group": "2_nav@2",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/ || explorerResourceIsFolder"
+        },
+        {
+          "submenu": "rgdSuite.explorerTools",
+          "group": "2_nav@3",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/ || explorerResourceIsFolder || resourceExtname == .sga"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdSuite.showGitTableDiff",
+          "group": "3_validate@0"
         },
         {
           "when": "resourceExtname == .rgd || resourceExtname == .lua",
           "command": "rgdSuite.checkParity",
-          "group": "validate@1"
+          "group": "3_validate@1"
         },
         {
           "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
           "command": "rgd.validatePath",
-          "group": "validate@2"
+          "group": "3_validate@2"
         },
         {
           "when": "resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
           "command": "rgd.validateEncoding",
-          "group": "validate@3"
+          "group": "3_validate@3"
         },
         {
           "when": "resourceExtname == .rgd || resourceExtname == .lua",
           "command": "rgd.validateReferences",
-          "group": "validate@4"
+          "group": "3_validate@4"
         },
         {
           "when": "explorerResourceIsFolder",
           "command": "rgd.batchValidate",
-          "group": "validate@5"
+          "group": "3_validate@5"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgdEditor.convertToText",
-          "group": "convert@1"
+          "group": "4_convert@1"
         },
         {
           "when": "resourceFilename =~ /\\.rgd\\.txt$/",
           "command": "rgdEditor.convertToBinary",
-          "group": "convert@2"
+          "group": "4_convert@2"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgdEditor.dumpToLua",
-          "group": "convert@3"
+          "group": "4_convert@3"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdSuite.dumpLuaAndOpen",
+          "group": "4_convert@4"
         },
         {
           "when": "resourceExtname == .lua",
           "command": "rgdEditor.compileToRgd",
-          "group": "convert@4"
+          "group": "4_convert@5"
+        },
+        {
+          "when": "resourceExtname == .lua",
+          "command": "rgdSuite.compileAndOpen",
+          "group": "4_convert@6"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdSuite.convertSelectionToLua",
+          "group": "4_convert@7"
+        },
+        {
+          "when": "resourceExtname == .lua",
+          "command": "rgdSuite.convertSelectionToRgd",
+          "group": "4_convert@8"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdSuite.convertSelectionToText",
+          "group": "4_convert@9"
         },
         {
           "when": "resourceExtname == .lua",
           "command": "rgd.fromLua",
-          "group": "cli@1"
+          "group": "5_cli@1"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgd.toLua",
-          "group": "cli@2"
+          "group": "5_cli@2"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgd.info",
-          "group": "cli@3"
+          "group": "5_cli@3"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgd.validate",
-          "group": "cli@4"
+          "group": "5_cli@4"
         },
         {
           "when": "resourceExtname == .rgd",
           "command": "rgdEditor.showInfo",
-          "group": "info@1"
+          "group": "6_info@1"
+        },
+        {
+          "when": "resourceExtname == .rgd",
+          "command": "rgdSuite.quickDigest",
+          "group": "6_info@2"
         },
         {
           "when": "resourceExtname == .sga",
           "command": "rgdEditor.extractFromSga",
-          "group": "info@2"
+          "group": "6_info@3"
         },
         {
           "when": "explorerResourceIsFolder",
           "command": "rgdEditor.batchToLua",
-          "group": "batch@1"
+          "group": "7_batch@1"
         },
         {
           "when": "explorerResourceIsFolder",
           "command": "rgdEditor.batchToRgd",
-          "group": "batch@2"
+          "group": "7_batch@2"
         },
         {
           "when": "explorerResourceIsFolder",
           "command": "rgdSuite.batchCheckParity",
-          "group": "batch@3"
+          "group": "7_batch@3"
+        },
+        {
+          "when": "explorerResourceIsFolder",
+          "command": "rgdSuite.searchKeyInFolder",
+          "group": "7_batch@4"
+        },
+        {
+          "when": "explorerResourceIsFolder",
+          "command": "rgdSuite.findFilesByName",
+          "group": "7_batch@5"
+        },
+        {
+          "when": "explorerResourceIsFolder",
+          "command": "rgdSuite.newRgdFromTemplate",
+          "group": "7_batch@6"
         },
         {
           "when": "resourceExtname == .rgd || resourceExtname == .lua || explorerResourceIsFolder",
           "command": "rgdEditor.selectLocaleFolder",
-          "group": "config@1"
+          "group": "8_config@1"
+        },
+        {
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || explorerResourceIsFolder",
+          "command": "rgdSuite.refreshCaches",
+          "group": "8_config@2"
+        }
+      ],
+      "rgdSuite.explorerNavigate": [
+        {
+          "command": "rgdSuite.openParentReference",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua",
+          "group": "1@1"
+        },
+        {
+          "command": "rgdSuite.findReferencesToFile",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua",
+          "group": "1@2"
+        },
+        {
+          "command": "rgdSuite.revealAttribRoot",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/ || explorerResourceIsFolder",
+          "group": "1@3"
+        },
+        {
+          "command": "rgdSuite.searchKeyInFolder",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || explorerResourceIsFolder",
+          "group": "1@4"
+        },
+        {
+          "command": "rgdSuite.findFilesByName",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || explorerResourceIsFolder",
+          "group": "1@5"
+        }
+      ],
+      "rgdSuite.explorerCopy": [
+        {
+          "command": "rgdSuite.copyAttribPath",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
+          "group": "1@1"
+        },
+        {
+          "command": "rgdSuite.copyDataAttribPath",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
+          "group": "1@2"
+        },
+        {
+          "command": "rgdSuite.copyReferenceSnippet",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua",
+          "group": "1@3"
+        },
+        {
+          "command": "rgdSuite.copyFileStem",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
+          "group": "1@4"
+        },
+        {
+          "command": "rgdSuite.copyFileName",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
+          "group": "1@5"
+        },
+        {
+          "command": "rgdSuite.copyAbsolutePath",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/ || explorerResourceIsFolder",
+          "group": "1@6"
+        },
+        {
+          "command": "rgdSuite.copyHash",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
+          "group": "1@7"
+        },
+        {
+          "command": "rgdSuite.copyFileInfo",
+          "when": "resourceExtname == .rgd",
+          "group": "1@8"
+        }
+      ],
+      "rgdSuite.explorerTools": [
+        {
+          "command": "rgdSuite.renamePair",
+          "when": "resourceExtname == .rgd || resourceExtname == .lua",
+          "group": "1@1"
+        },
+        {
+          "command": "rgdSuite.compareTwoRgd",
+          "when": "resourceExtname == .rgd",
+          "group": "1@2"
+        },
+        {
+          "command": "rgdSuite.stripBom",
+          "when": "resourceExtname == .lua || resourceFilename =~ /\\.rgd\\.txt$/",
+          "group": "1@3"
+        },
+        {
+          "command": "rgdSuite.newRgdFromTemplate",
+          "when": "explorerResourceIsFolder || resourceExtname == .rgd || resourceExtname == .lua",
+          "group": "1@4"
+        },
+        {
+          "command": "rgdSuite.quickDigest",
+          "when": "resourceExtname == .rgd",
+          "group": "1@5"
+        },
+        {
+          "command": "rgdEditor.openPowerShellSetup",
+          "group": "1@6"
         }
       ],
       "view/item/context": [
@@ -348,7 +688,10 @@
         "rgdEditor.defaultRgdVersion": {
           "type": "number",
           "default": 1,
-          "enum": [1, 3],
+          "enum": [
+            1,
+            3
+          ],
           "description": "Default RGD version when creating new files"
         },
         "rgdEditor.resolveLocaleStrings": {
@@ -414,7 +757,7 @@
     }
   },
   "scripts": {
-    "test": "node test/validators.test.js && node test/task-scheduling.test.js && node test/batch-validate-ui.test.js && node test/batch-validate-worker.test.js && node test/package-menu.test.js && node test/cli-parity.test.js",
+    "test": "node test/roundtrip.js && node test/validators.test.js && node test/task-scheduling.test.js && node test/batch-validate-ui.test.js && node test/batch-validate-worker.test.js && node test/package-menu.test.js && node test/cli-parity.test.js && node test/sga-extract-safe.test.js && node test/table-diff.test.js && node test/rename-rewrite.test.js",
     "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node16 --minify --legal-comments=none --resolve-extensions=.ts,.js --tsconfig=tsconfig.json",
     "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node16 --sourcemap --resolve-extensions=.ts,.js --tsconfig=tsconfig.json --watch",
     "package": "vsce package --no-dependencies && node -e \"const {execSync,version}=require('child_process'),p=require('./package.json');const src='rgd-suite-'+p.version+'.vsix';require('fs').copyFileSync(src,'rgd-suite-latest.vsix');console.log('Copied '+src+' -> rgd-suite-latest.vsix')\"",
@@ -427,8 +770,5 @@
     "@vscode/vsce": "^2.0.0",
     "esbuild": "^0.19.12",
     "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "@exodus/bytes": "^1.8.0"
   }
 }

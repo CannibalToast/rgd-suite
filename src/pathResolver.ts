@@ -24,6 +24,16 @@ export function resolveAttribPath(
   let normalizedRef = ref.replace(/\\/g, "/");
   if (normalizedRef.startsWith("/")) normalizedRef = normalizedRef.substring(1);
 
+  // Reject traversal / absolute-style refs before joining.
+  if (
+    !normalizedRef ||
+    normalizedRef.includes("\0") ||
+    /^[a-zA-Z]:/.test(normalizedRef) ||
+    normalizedRef.split("/").some((p) => p === "..")
+  ) {
+    return { path: path.join(attribRoot, "_invalid_ref_"), exists: false };
+  }
+
   const attribRootNormalized = attribRoot.replace(/\\/g, "/");
   if (
     normalizedRef.toLowerCase().includes(attribRootNormalized.toLowerCase())
@@ -42,7 +52,14 @@ export function resolveAttribPath(
     normalizedRef = normalizedRef.substring(7);
   }
 
-  const fullPath = path.join(attribRoot, normalizedRef);
+  const resolvedBase = path.resolve(attribRoot);
+  const fullPath = path.resolve(resolvedBase, ...normalizedRef.split("/").filter(Boolean));
+  const baseWithSep = resolvedBase.endsWith(path.sep)
+    ? resolvedBase
+    : resolvedBase + path.sep;
+  if (fullPath !== resolvedBase && !fullPath.startsWith(baseWithSep)) {
+    return { path: fullPath, exists: false };
+  }
   if (fs.existsSync(fullPath)) return { path: fullPath, exists: true };
 
   const found = findInAttribRoot(normalizedRef, attribRoot);

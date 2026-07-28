@@ -42,7 +42,9 @@ export abstract class WorkerPool<TResult> {
             if (!item) return;
             this.pending.delete(msg.id);
             this.workerJob.delete(w);
-            this.idle.push(w);
+            if (this.workers.includes(w)) {
+                this.idle.push(w);
+            }
             this.consecutiveInitFailures = 0;
             this.drain();
             if (msg.error) item.reject(new Error(msg.error));

@@ -151,7 +151,7 @@ export class RgdTreeProvider implements vscode.TreeDataProvider<RgdTreeItem> {
     );
   }
 
-  revealInEditor(item: RgdTreeItem) {
+  revealInEditor(_item: RgdTreeItem) {
     if (!this.sourceUri) return;
     vscode.workspace.openTextDocument(this.sourceUri).then((doc) => {
       vscode.window.showTextDocument(doc, { preview: false });

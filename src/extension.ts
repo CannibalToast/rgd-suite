@@ -12,7 +12,10 @@ import { findAttribBase } from "./attribUtils";
 import { getErrorMessage } from "./errorUtils";
 import { sanitizeUserPath } from "./pathUtils";
 import { isNilReference } from "./validators";
-import { configureParsedRgdCacheLimits } from "./parsedRgdCache";
+import {
+  configureParsedRgdCacheLimits,
+  invalidateParsedRgdCache,
+} from "./parsedRgdCache";
 
 function applyCacheSettings(): void {
   const suite = vscode.workspace.getConfiguration("rgdSuite");
@@ -23,9 +26,8 @@ function applyCacheSettings(): void {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-  console.log(
-    `RGD Suite v${context.extension.packageJSON.version ?? "unknown"} is now active`,
-  );
+  // Extension-host diagnostic; not a leftover debug print.
+  console.log(`RGD Suite v${context.extension.packageJSON.version} is now active`);
 
   applyCacheSettings();
   context.subscriptions.push(
@@ -33,9 +35,6 @@ export function activate(context: vscode.ExtensionContext) {
       if (
         e.affectsConfiguration("rgdEditor.dictionaryPaths")
       ) {
-        console.log(
-          "[RGD Suite] Dictionary configuration changed, refreshing...",
-        );
         DictionaryManager.getInstance().refresh(context);
       }
       if (
@@ -92,27 +91,43 @@ export function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand(
       "rgdEditor.openRgd",
-      async (uri: vscode.Uri) => {
-        if (uri) {
-          const rgdUri = fsProvider.toRgdUri(uri.fsPath);
-          const doc = await vscode.workspace.openTextDocument(rgdUri);
-          await vscode.window.showTextDocument(doc, { preview: false });
-          await vscode.languages.setTextDocumentLanguage(doc, "rgd-text");
+      async (uri?: vscode.Uri) => {
+        const target =
+          uri ?? vscode.window.activeTextEditor?.document.uri;
+        if (!target) {
+          vscode.window.showErrorMessage("No RGD file selected");
+          return;
         }
+        // Prefer the custom table editor (not the rgd:// text VFS).
+        await vscode.commands.executeCommand(
+          "vscode.openWith",
+          target.scheme === "rgd"
+            ? vscode.Uri.file(fsProvider.toRealPath(target))
+            : target,
+          RgdEditorProvider.viewType,
+        );
       },
     ),
     vscode.commands.registerCommand(
       "rgdEditor.openRgdText",
-      async (uri: vscode.Uri) => {
-        if (uri) {
-          const rgdUri = fsProvider.toRgdUri(uri.fsPath);
-          const doc = await vscode.workspace.openTextDocument(rgdUri);
-          await vscode.window.showTextDocument(doc, { preview: false });
-          await vscode.languages.setTextDocumentLanguage(doc, "rgd-text");
-          vscode.window.showInformationMessage(
-            "Opened in Text Editor (backup mode). Use RGD: Open for Table Editor.",
-          );
+      async (uri?: vscode.Uri) => {
+        const target =
+          uri ?? vscode.window.activeTextEditor?.document.uri;
+        if (!target) {
+          vscode.window.showErrorMessage("No RGD file selected");
+          return;
         }
+        const fsPath =
+          target.scheme === "rgd"
+            ? fsProvider.toRealPath(target)
+            : target.fsPath;
+        const rgdUri = fsProvider.toRgdUri(fsPath);
+        const doc = await vscode.workspace.openTextDocument(rgdUri);
+        await vscode.window.showTextDocument(doc, { preview: false });
+        await vscode.languages.setTextDocumentLanguage(doc, "rgd-text");
+        vscode.window.showInformationMessage(
+          "Opened in Plain Text Editor. Use RGD Suite: Open (Table Editor) for the visual editor.",
+        );
       },
     ),
   );
@@ -262,6 +277,36 @@ export function activate(context: vscode.ExtensionContext) {
 
   void import("./cliCommands").then((m) => m.registerCliCommands(context));
   void import("./parityChecker").then((m) => m.registerParityCommands(context));
+  void import("./comfortCommands").then((m) =>
+    m.registerComfortCommands(context),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "rgdSuite.showGitTableDiff",
+      async (uri?: vscode.Uri) => {
+        const target =
+          uri ?? vscode.window.activeTextEditor?.document.uri;
+        if (!target) {
+          vscode.window.showErrorMessage("No RGD file selected");
+          return;
+        }
+        const fileUri =
+          target.scheme === "rgd"
+            ? vscode.Uri.file(fsProvider.toRealPath(target))
+            : target;
+        // Open table editor; user clicks Git Diff (loads vs HEAD).
+        await vscode.commands.executeCommand(
+          "vscode.openWith",
+          fileUri,
+          RgdEditorProvider.viewType,
+        );
+        vscode.window.showInformationMessage(
+          "Opened table editor — click Git Diff in the toolbar to compare against HEAD.",
+        );
+      },
+    ),
+  );
 
   const setupScript = path.join(context.extensionPath, "cli", "setup.ps1");
   if (fs.existsSync(setupScript)) {
@@ -277,24 +322,8 @@ export function activate(context: vscode.ExtensionContext) {
     );
   }
 
-  context.subscriptions.push(
-    vscode.workspace.onDidOpenTextDocument(async (doc) => {
-      if (
-        doc.uri.scheme === "file" &&
-        doc.fileName.endsWith(".rgd") &&
-        doc.languageId !== "rgd-text"
-      ) {
-        try {
-          const rgdUri = fsProvider.toRgdUri(doc.uri.fsPath);
-          const vfsDoc = await vscode.workspace.openTextDocument(rgdUri);
-          await vscode.window.showTextDocument(vfsDoc, { preview: false });
-          await vscode.languages.setTextDocumentLanguage(vfsDoc, "rgd-text");
-        } catch {
-          /* custom editor handles direct .rgd opens */
-        }
-      }
-    }),
-  );
+  // Do not force-open rgd:// VFS on every .rgd text open — that races the
+  // custom table editor. Users can explicitly open plain text via the command.
 
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument(async (doc) => {
@@ -310,5 +339,5 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-  console.log("RGD Suite deactivated");
+  invalidateParsedRgdCache();
 }

@@ -58,8 +58,6 @@ export interface ParityResult {
   error?: string;
 }
 
-// ---------- Flatten RGD table ----------
-
 function flattenRgd(
   table: RgdTable,
   dict: HashDictionary,
@@ -96,14 +94,11 @@ function flattenRgd(
         out.set(full, { type: "string", value: entry.value as string });
         break;
       case RgdDataType.NoData:
-        out.set(full, { type: "nil", value: null });
         break;
     }
   }
   return out;
 }
-
-// ---------- Flatten ParsedLuaTable ----------
 
 function flattenLua(
   table: ParsedLuaTable,
@@ -132,8 +127,6 @@ function flattenLua(
   }
   return out;
 }
-
-// ---------- Helpers ----------
 
 function normRef(p: string): string {
   return p
@@ -181,8 +174,6 @@ function collectMissingRefs(
   }
   return issues;
 }
-
-// ---------- Core parity check ----------
 
 export function checkParity(
   rgdPath: string,
@@ -269,8 +260,6 @@ export function checkParity(
   };
 }
 
-// ---------- File discovery ----------
-
 const SKIP_SUFFIXES = [".test.rgd", ".fromtext.rgd"];
 
 async function findRgdLuaPairs(
@@ -307,8 +296,6 @@ async function findRgdLuaPairs(
   }
   return pairs;
 }
-
-// ---------- Output formatting ----------
 
 let _channel: vscode.OutputChannel | null = null;
 function getChannel(): vscode.OutputChannel {
@@ -375,8 +362,6 @@ function formatResult(result: ParityResult, folder?: string): string {
   validationSection("Validation Issues", validationIssues, 50);
   return lines.join("\n");
 }
-
-// ---------- Command registration ----------
 
 export function registerParityCommands(context: vscode.ExtensionContext) {
   context.subscriptions.push(
@@ -661,11 +646,13 @@ export function registerParityCommands(context: vscode.ExtensionContext) {
         out.appendLine("═".repeat(60));
 
         const msg = `Parity batch done: ${passed} pass, ${failed} fail, ${noLua} skipped`;
-        failed > 0
-          ? vscode.window.showWarningMessage(
-              msg + " — see Output > RGD Parity Checker",
-            )
-          : vscode.window.showInformationMessage(msg);
+        if (failed > 0) {
+          void vscode.window.showWarningMessage(
+            msg + " — see Output > RGD Parity Checker",
+          );
+        } else {
+          void vscode.window.showInformationMessage(msg);
+        }
       },
     ),
   );
