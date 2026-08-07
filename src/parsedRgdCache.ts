@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { LRUCache } from "lru-cache";
 import { parseRgd } from "../bundled/rgd-tools/dist/reader";
 import { rgdToText } from "../bundled/rgd-tools/dist/textFormat";
 import { HashDictionary, RgdFile } from "../bundled/rgd-tools/dist/types";
@@ -19,29 +20,38 @@ export interface ParsedRgdEntry {
 
 let maxEntries = 50;
 
+function createCache(cap: number): LRUCache<string, ParsedRgdEntry> {
+  return new LRUCache<string, ParsedRgdEntry>({
+    max: cap,
+    ttl: 1000 * 60 * 30,
+    updateAgeOnGet: true,
+    allowStale: false,
+    ttlAutopurge: true,
+  });
+}
+
+let _cache = createCache(maxEntries);
+
 export function configureParsedRgdCacheLimits(vfsSize?: number, treeSize?: number): void {
   const cap = Math.max(1, vfsSize ?? treeSize ?? maxEntries);
   maxEntries = cap;
-  while (_cache.size > maxEntries) {
-    const first = _cache.keys().next().value;
-    if (first === undefined) break;
-    _cache.delete(first);
+  const newCache = createCache(cap);
+  // Preserve the most-recently-used entries up to the new limit.
+  let kept = 0;
+  for (const [k, v] of _cache.entries()) {
+    if (kept >= cap) break;
+    newCache.set(k, v);
+    kept++;
   }
+  _cache = newCache;
 }
 
-const _cache = new Map<string, ParsedRgdEntry>();
-
 function touch(fsPath: string, entry: ParsedRgdEntry): void {
-  _cache.delete(fsPath);
   _cache.set(fsPath, entry);
 }
 
 function evictIfNeeded(): void {
-  while (_cache.size > maxEntries) {
-    const first = _cache.keys().next().value;
-    if (first === undefined) break;
-    _cache.delete(first);
-  }
+  // LRUCache evicts automatically on set when over capacity.
 }
 
 function localeEnabled(): boolean {

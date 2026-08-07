@@ -716,15 +716,6 @@ export function registerComfortCommands(
     }
   });
 
-  // Dump Lua and open beside
-  push("rgdSuite.dumpLuaAndOpen", async (uri?: vscode.Uri) => {
-    if (!uri || !/\.rgd$/i.test(uri.fsPath)) {
-      vscode.window.showWarningMessage("Select a .rgd file");
-      return;
-    }
-    await vscode.commands.executeCommand("rgdEditor.dumpToLua", uri);
-  });
-
   // Invalidate parse/index caches after external edits (Corsix "refresh files")
   push("rgdSuite.refreshCaches", async () => {
     invalidateParsedRgdCache();

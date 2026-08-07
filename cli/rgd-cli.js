@@ -132,22 +132,31 @@ function makeLuaFileLoader(attribBase, dict) {
     const cache = new Map();
     return function loader(refPath) {
         if (!attribBase) return null;
+
+        // Try .lua first (the canonical source form).
         const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
-        if (!luaPath) return null;
-        if (cache.has(luaPath)) return cache.get(luaPath);
-        if (fs.existsSync(luaPath)) {
-            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
-            const c = fixed.buffer.toString('utf8');
-            cache.set(luaPath, c);
-            return c;
+        if (luaPath) {
+            if (cache.has(luaPath)) return cache.get(luaPath);
+            if (fs.existsSync(luaPath)) {
+                const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
+                const c = fixed.buffer.toString('utf8');
+                cache.set(luaPath, c);
+                return c;
+            }
         }
+
+        // Fall back to a compiled .rgd, converting it to Lua text.
         const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
         if (rgdPath && fs.existsSync(rgdPath)) {
             const c = rgdToLua(readRgdFile(rgdPath, dict));
-            cache.set(luaPath, c);
+            cache.set(rgdPath, c);
             return c;
         }
-        cache.set(luaPath, null);
+
+        // Remember that this reference is missing so repeated lookups don't
+        // keep hitting the disk / index.
+        const cacheKey = luaPath || rgdPath;
+        if (cacheKey) cache.set(cacheKey, null);
         return null;
     };
 }
@@ -163,9 +172,12 @@ function makeParentLoader(attribBase, dict) {
 function makeRgdParentLoader(attribBase, dict) {
     const self = async (refPath) => {
         if (!attribBase) return null;
+
+        // Prefer an already-compiled .rgd parent.
         const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
-        if (!rgdPath) return null;
-        if (fs.existsSync(rgdPath)) return readRgdFile(rgdPath, dict).gameData;
+        if (rgdPath && fs.existsSync(rgdPath)) return readRgdFile(rgdPath, dict).gameData;
+
+        // Fall back to a .lua parent and resolve its own inheritance.
         const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
         if (luaPath && fs.existsSync(luaPath)) {
             const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
@@ -173,6 +185,7 @@ function makeRgdParentLoader(attribBase, dict) {
             const { gameData } = await luaToRgdResolved(code, dict, self);
             return gameData;
         }
+
         return null;
     };
     return self;
@@ -225,23 +238,6 @@ function flattenRgd(table, prefix, out) {
     return out;
 }
 
-function flattenLua(table, prefix, out) {
-    out = out || new Map();
-    prefix = prefix || '';
-    for (const [key, entry] of table.entries) {
-        const full = prefix ? prefix + '.' + key : key;
-        if (entry.type === 'table' && entry.table) {
-            flattenLua(entry.table, full, out);
-            continue;
-        }
-        const val = entry.value;
-        if (val === null || val === undefined) out.set(full, { type: 'nil', value: null });
-        else if (typeof val === 'boolean') out.set(full, { type: 'bool', value: val });
-        else if (typeof val === 'number') out.set(full, { type: entry.dataType === RgdDataType.Float || !Number.isInteger(val) ? 'float' : 'int', value: val });
-        else if (typeof val === 'string') out.set(full, { type: 'string', value: val });
-    }
-    return out;
-}
 
 function normRef(p) {
     return String(p || '').replace(/\\/g, '/').toLowerCase().replace(/\.lua$/, '').replace(/^\//, '');
@@ -300,27 +296,33 @@ function maybeStripBom(filePath, buffer, fixes) {
     return fixed.buffer;
 }
 
-function checkParityPair(rgdPath, luaPath, dict, attribBaseOverride) {
+async function checkParityPair(rgdPath, luaPath, dict, attribBaseOverride) {
     const attribBase = attribBaseOverride || findAttribBase(rgdPath) || findAttribBase(luaPath);
     const validationIssues = [];
     const fixes = [];
     validationIssues.push(...validateFilePath(attribBase ? path.relative(attribBase, rgdPath) : rgdPath));
     validationIssues.push(...validateFilePath(attribBase ? path.relative(attribBase, luaPath) : luaPath));
 
-    const rgdFile = readRgdFile(rgdPath, dict);
-    const rgdMap = flattenRgd(rgdFile.gameData);
-
     const luaBuf = maybeStripBom(luaPath, fs.readFileSync(luaPath), fixes);
     validationIssues.push(...validateEncoding(luaBuf, luaPath).issues);
-    const luaLoader = makeLuaFileLoader(attribBase, dict);
     const luaCode = stripUtf8Bom(luaBuf.toString('utf8'));
-    const luaTable = parseLuaToTable(luaCode, luaLoader);
-    const luaMap = flattenLua(luaTable);
+
+    // Compile the Lua source to an RGD with full inheritance resolution.
+    // This makes the parity comparison source-of-truth: any Lua that fails
+    // to compile or diverges from the on-disk RGD will be caught.
+    const rgdParent = makeRgdParentLoader(attribBase, dict);
+    const { gameData: compiledGameData } = await luaToRgdResolved(luaCode, dict, rgdParent);
+
+    // Read the on-disk RGD *after* compiling the Lua so custom names added to
+    // the dictionary during compilation are available for name resolution.
+    const rgdFile = readRgdFile(rgdPath, dict);
+    const rgdMap = flattenRgd(rgdFile.gameData);
+    const compiledMap = flattenRgd(compiledGameData);
 
     validationIssues.push(...validateRgdReferences(rgdFile.gameData, attribBase));
-    validationIssues.push(...validateLuaReferences(luaTable, attribBase));
+    validationIssues.push(...validateRgdReferences(compiledGameData, attribBase));
 
-    const issues = compareFlatMaps(rgdMap, luaMap);
+    const issues = compareFlatMaps(rgdMap, compiledMap);
     return {
         rgdFile: rgdPath,
         luaFile: luaPath,
@@ -556,7 +558,7 @@ const COMMANDS = {
         const pair = resolvePair(path.resolve(input));
         if (!fs.existsSync(pair.rgd)) throw new Error('RGD not found: ' + pair.rgd);
         if (!fs.existsSync(pair.lua)) throw new Error('Lua not found: ' + pair.lua);
-        const result = checkParityPair(pair.rgd, pair.lua, dict, attribBase);
+        const result = await checkParityPair(pair.rgd, pair.lua, dict, attribBase);
         printParity([result], 0, format, path.basename(pair.rgd));
     },
 
@@ -582,7 +584,7 @@ const COMMANDS = {
         const results = [];
         await scheduleBatched(jobs, workers, async ({ rgdPath, luaPath }) => {
             try {
-                results.push(checkParityPair(rgdPath, luaPath, dict, attribBase));
+                results.push(await checkParityPair(rgdPath, luaPath, dict, attribBase));
             } catch (err) {
                 results.push({
                     rgdFile: rgdPath,
@@ -729,10 +731,18 @@ const COMMANDS = {
         if (format === 'json') {
             console.log(JSON.stringify(result, null, 2));
         } else {
+            const changed = entries.filter(e => e.kind === 'changed').length;
+            const added = entries.filter(e => e.kind === 'added').length;
+            const removed = entries.filter(e => e.kind === 'removed').length;
+            console.log(`RGD table diff: ${abs} vs ${ref}`);
+            console.log(`  ${changed} changed, ${added} added, ${removed} removed`);
             for (const e of entries) {
                 if (e.kind === 'changed') {
+                    console.log(`[CHANGED] ${e.key}: ${JSON.stringify(e.oldValue.value)} -> ${JSON.stringify(e.newValue.value)}`);
                 } else if (e.kind === 'added') {
+                    console.log(`[ADDED]   ${e.key}: ${JSON.stringify(e.newValue.value)}`);
                 } else {
+                    console.log(`[REMOVED] ${e.key}: ${JSON.stringify(e.oldValue.value)}`);
                 }
             }
         }
@@ -740,8 +750,49 @@ const COMMANDS = {
     },
 
     async 'help'() {
+        showHelp(0);
     }
 };
+
+function showHelp(exitCode = 0, extra = '') {
+    if (extra) console.error(extra);
+    console.log(`RGD Suite CLI — Standalone RGD converter, validator and parity checker.
+
+Usage: rgd <command> [options]
+
+Commands:
+  hash <string>                    Compute the RGD hash of a string
+  info <input.rgd>                 Show RGD file metadata
+  to-text <input.rgd>              Convert RGD to human-readable text (.rgd.txt)
+  from-text <input.rgd.txt>        Convert text back to binary RGD
+  to-lua <input.rgd>               Dump RGD to differential Lua
+  from-lua <input.lua>             Compile Lua back to binary RGD
+  batch-to-lua <folder>            Convert all .rgd files in a folder to .lua
+  batch-to-rgd <folder>            Compile all .lua files in a folder to .rgd
+  extract-sga <archive.sga> <outputFolder>
+                                   Extract .rgd files from an SGA archive
+  parity <input.rgd|input.lua>     Compare an RGD against its Lua source
+  parity-batch <folder>            Compare all RGD/Lua pairs in a folder
+  validate <file|folder>           Validate encoding, paths and references
+  table-diff <input.rgd>           Diff working RGD against a git revision
+
+Global options (where applicable):
+  -d, --dictionary <path>          Additional hash dictionary file or folder
+  -a, --attrib <path>              Attrib root for reference/parent resolution
+  --version <1|3>                  RGD version for from-text / from-lua
+  -w, --workers <N>                Worker thread count for batch/parity
+  --format <json|text>             Output format for parity/validate/table-diff
+  -o, --output <path>              Output file for single-file conversions
+
+Examples:
+  rgd hash "unit_name"
+  rgd info unit.rgd
+  rgd to-text unit.rgd -o unit.rgd.txt
+  rgd from-lua unit.lua
+  rgd validate ./data/attrib --format json
+  rgd parity unit.rgd --format json`);
+    process.exit(exitCode);
+}
 
 function usage(msg) {
     console.error('Usage: rgd ' + msg);
@@ -752,7 +803,15 @@ function usage(msg) {
 
 (async () => {
     const [,, cmd, ...args] = process.argv;
-    const handler = COMMANDS[cmd] || COMMANDS['help'];
+    if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
+        await COMMANDS['help']();
+        return;
+    }
+    const handler = COMMANDS[cmd];
+    if (!handler) {
+        showHelp(1, `Unknown command: ${cmd}`);
+        return;
+    }
     try { await handler(args); }
     catch (err) { console.error(err.message); process.exit(1); }
 })();

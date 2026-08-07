@@ -1,0 +1,10 @@
+{
+  "todo-tree.ripgrep": "/usr/bin/rg",
+  "files.exclude": {
+    "out": true,
+    "bundled/rgd-tools/dist/**/*.js": true,
+    "bundled/rgd-tools/dist/**/*.d.ts": true
+  },
+  "js/ts.tsdk.path": "node_modules/typescript/lib",
+  "js/ts.tsserver.experimental.enableProjectDiagnostics": true
+}

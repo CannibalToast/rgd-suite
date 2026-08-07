@@ -42,27 +42,32 @@ function makeFix(filePath) {
 function makeLuaFileLoader(attribBase) {
     return function loader(refPath) {
         if (!attribBase) return null;
+
         const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
-        if (!luaPath) return null;
-        if (luaFileCache.has(luaPath)) {
-            const cached = luaFileCache.get(luaPath);
-            luaFileCache.delete(luaPath);
-            luaFileCache.set(luaPath, cached);
-            return cached;
+        if (luaPath) {
+            if (luaFileCache.has(luaPath)) {
+                const cached = luaFileCache.get(luaPath);
+                luaFileCache.delete(luaPath);
+                luaFileCache.set(luaPath, cached);
+                return cached;
+            }
+            if (fs.existsSync(luaPath)) {
+                const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
+                const content = fixed.buffer.toString('utf8');
+                touch(luaFileCache, luaPath, content);
+                return content;
+            }
         }
-        if (fs.existsSync(luaPath)) {
-            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
-            const content = fixed.buffer.toString('utf8');
-            touch(luaFileCache, luaPath, content);
-            return content;
-        }
+
         const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
         if (rgdPath && fs.existsSync(rgdPath)) {
             const content = rgdToLua(parseRgd(fs.readFileSync(rgdPath), dict));
-            touch(luaFileCache, luaPath, content);
+            touch(luaFileCache, rgdPath, content);
             return content;
         }
-        touch(luaFileCache, luaPath, null);
+
+        const cacheKey = luaPath || rgdPath;
+        if (cacheKey) touch(luaFileCache, cacheKey, null);
         return null;
     };
 }

@@ -29,6 +29,10 @@ export function activate(context: vscode.ExtensionContext) {
   // Extension-host diagnostic; not a leftover debug print.
   console.log(`RGD Suite v${context.extension.packageJSON.version} is now active`);
 
+  if (!vscode.workspace.isTrusted) {
+    return;
+  }
+
   applyCacheSettings();
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {

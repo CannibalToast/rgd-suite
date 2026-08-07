@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { ParsedLuaTable } from "../bundled/rgd-tools/dist/luaFormat";
-import { RgdTable, RgdDataType } from "../bundled/rgd-tools/dist/types";
+import { RgdTable } from "../bundled/rgd-tools/dist/types";
 
 const ABSOLUTE_RE = /^[a-zA-Z]:[\\/]|^\\\\|^\//;
 

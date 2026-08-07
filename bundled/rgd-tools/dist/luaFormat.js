@@ -411,13 +411,14 @@ async function luaToRgdResolved(luaCode, dict, parentLoader) {
     let gameData = { entries: [] };
     let version = 1;
     // First pass: find root Inherit and load base data
+    let rootRefPath;
     for (const line of lines) {
         const trimmed = line.trim();
         const inheritMatch = trimmed.match(/^GameData\s*=\s*Inherit\s*\(\s*\[\[(.*?)\]\]\s*\)/);
         if (inheritMatch) {
-            const refPath = inheritMatch[1];
-            if (refPath) {
-                const parentTable = await parentLoader(refPath);
+            rootRefPath = inheritMatch[1];
+            if (rootRefPath) {
+                const parentTable = await parentLoader(rootRefPath);
                 if (parentTable) {
                     // Deep copy parent as base
                     gameData = deepCopyRgdTable(parentTable);
@@ -425,6 +426,12 @@ async function luaToRgdResolved(luaCode, dict, parentLoader) {
             }
             break;
         }
+    }
+    // Preserve the root Inherit reference so round-trips and differential
+    // dumps can reconstruct it. RGD readers derive gameData.reference from
+    // a special $REF entry, so we must write one.
+    if (rootRefPath) {
+        setRefEntry(gameData, rootRefPath);
     }
     // Track tables for navigation
     const tables = new Map();
@@ -488,25 +495,13 @@ async function luaToRgdResolved(luaCode, dict, parentLoader) {
                 const refTable = await parentLoader(refPath);
                 if (refTable) {
                     newTable = deepCopyRgdTable(refTable);
-                    newTable.reference = refPath;
-                    // Ensure $REF entry exists
-                    if (!newTable.entries.find(e => e.hash === REF_HASH)) {
-                        newTable.entries.unshift({
-                            hash: REF_HASH,
-                            name: '$REF',
-                            type: types_1.RgdDataType.String,
-                            value: refPath
-                        });
-                    }
+                    // Overwrite any inherited $REF so this table points to its
+                    // immediate parent, not a grandparent.
+                    setRefEntry(newTable, refPath);
                 }
                 else {
-                    newTable = { entries: [], reference: refPath };
-                    newTable.entries.push({
-                        hash: REF_HASH,
-                        name: '$REF',
-                        type: types_1.RgdDataType.String,
-                        value: refPath
-                    });
+                    newTable = { entries: [] };
+                    setRefEntry(newTable, refPath);
                 }
             }
             else {
@@ -551,6 +546,26 @@ function deepCopyRgdTable(table) {
         }
     }
     return copy;
+}
+/**
+ * Ensure a table's $REF entry matches the requested reference path.
+ * Replaces any existing $REF (e.g., inherited from a grandparent) so
+ * round-trips preserve the immediate parent, not the grandparent.
+ */
+function setRefEntry(table, refPath) {
+    table.reference = refPath;
+    const existing = table.entries.find(e => e.hash === REF_HASH);
+    if (existing) {
+        existing.value = refPath;
+    }
+    else {
+        table.entries.unshift({
+            hash: REF_HASH,
+            name: '$REF',
+            type: types_1.RgdDataType.String,
+            value: refPath
+        });
+    }
 }
 /**
  * Navigate to a table by path, using cache

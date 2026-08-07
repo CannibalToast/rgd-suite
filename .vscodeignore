@@ -1,5 +1,7 @@
 src/**
 **/*.ts
+out/*
+!out/extension.js
 .vscode/**
 .agent_requests/**
 tsconfig.json
@@ -27,6 +29,9 @@ RGD
 
 # Devin agent workspace / debug artifacts — not shipped
 .devin/**
+
+# aislop agent instructions — not shipped
+.windsurfrules
 
 # Unused upstream CLI (extension uses cli/rgd-cli.js)
 bundled/rgd-tools/dist/cli.js

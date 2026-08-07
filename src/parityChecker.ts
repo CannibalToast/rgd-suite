@@ -2,11 +2,8 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import { parseRgd } from "../bundled/rgd-tools/dist/reader";
-import {
-  parseLuaToTable,
-  ParsedLuaTable,
-} from "../bundled/rgd-tools/dist/luaFormat";
-import { findAttribBase, makeLuaFileLoader } from "./attribUtils";
+import { luaToRgdResolved } from "../bundled/rgd-tools/dist/luaFormat";
+import { findAttribBase, makeRgdParentLoader } from "./attribUtils";
 import {
   RgdTable,
   RgdDataType,
@@ -19,12 +16,10 @@ import { defaultWorkerCount, scheduleBatched } from "./taskScheduling";
 import {
   ValidationIssue,
   validateEncoding,
-  validateLuaReferences,
   validateRgdReferences,
   stripUtf8Bom,
   stripUtf8BomFromFile,
   ValidationFix,
-  isNilReference,
 } from "./validators";
 
 const FLOAT_EPSILON = 1e-4;
@@ -38,11 +33,11 @@ type FlatMap = Map<string, FlatEntry>;
 
 export interface ParityIssue {
   kind:
-    | "missing_in_lua"
-    | "missing_in_rgd"
-    | "value_mismatch"
-    | "type_mismatch"
-    | "missing_ref";
+  | "missing_in_lua"
+  | "missing_in_rgd"
+  | "value_mismatch"
+  | "type_mismatch"
+  | "missing_ref";
   key: string;
   details: string;
 }
@@ -100,34 +95,6 @@ function flattenRgd(
   return out;
 }
 
-function flattenLua(
-  table: ParsedLuaTable,
-  prefix = "",
-  result?: FlatMap,
-): FlatMap {
-  const out = result ?? new Map<string, FlatEntry>();
-  for (const [key, entry] of table.entries) {
-    const full = prefix ? `${prefix}.${key}` : key;
-    if (entry.type === "table" && entry.table) {
-      flattenLua(entry.table, full, out);
-    } else {
-      const val = entry.value;
-      if (val === null || val === undefined) {
-        out.set(full, { type: "nil", value: null });
-      } else if (typeof val === "boolean") {
-        out.set(full, { type: "bool", value: val });
-      } else if (typeof val === "number") {
-        const isFloat =
-          entry.dataType === RgdDataType.Float || !Number.isInteger(val);
-        out.set(full, { type: isFloat ? "float" : "int", value: val });
-      } else if (typeof val === "string") {
-        out.set(full, { type: "string", value: val });
-      }
-    }
-  }
-  return out;
-}
-
 function normRef(p: string): string {
   return p
     .replace(/\\/g, "/")
@@ -148,103 +115,85 @@ function valuesMatch(a: FlatEntry, b: FlatEntry): boolean {
   return a.value === b.value;
 }
 
-function collectMissingRefs(
-  luaTable: ParsedLuaTable,
-  attribBase: string | null,
-  prefix = "",
-): ParityIssue[] {
-  const issues: ParityIssue[] = [];
-  for (const [key, entry] of luaTable.entries) {
-    const full = prefix ? `${prefix}.${key}` : key;
-    if (entry.type === "table" && entry.reference && attribBase) {
-      if (isNilReference(entry.reference)) continue;
-      let ref = entry.reference.replace(/\\/g, "/");
-      if (!ref.endsWith(".lua")) ref += ".lua";
-      if (!fs.existsSync(path.join(attribBase, ref))) {
-        issues.push({
-          kind: "missing_ref",
-          key: full,
-          details: `Reference not found on disk: ${ref}`,
-        });
-      }
-    }
-    if (entry.type === "table" && entry.table) {
-      issues.push(...collectMissingRefs(entry.table, attribBase, full));
-    }
-  }
-  return issues;
-}
-
-export function checkParity(
+export async function checkParity(
   rgdPath: string,
   luaPath: string,
   dict: HashDictionary,
   fileCache: Map<string, string | null> = new Map(),
   validateReferences = true,
-): ParityResult {
+): Promise<ParityResult> {
   const attribBase = findAttribBase(rgdPath) ?? findAttribBase(luaPath);
-  const luaLoader = makeLuaFileLoader(attribBase, dict, fileCache);
   const issues: ParityIssue[] = [];
   const validationIssues: ValidationIssue[] = [];
   const fixes: ValidationFix[] = [];
 
   const rgdBuf = fs.readFileSync(rgdPath);
-  const rgdFile = parseRgd(rgdBuf, dict);
-  const rgdMap = flattenRgd(rgdFile.gameData, dict);
 
   const bomResult = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
   if (bomResult.fix) fixes.push(bomResult.fix);
   const luaBuf = bomResult.buffer;
   validationIssues.push(...validateEncoding(luaBuf, luaPath).issues);
   const luaCode = stripUtf8Bom(luaBuf.toString("utf8"));
-  const luaTable = parseLuaToTable(luaCode, luaLoader);
-  const luaMap = flattenLua(luaTable);
 
-  issues.push(...collectMissingRefs(luaTable, attribBase));
+  // Compile the Lua source to an effective RGD so we compare full, resolved
+  // data instead of the raw source text. Custom key names are added to the
+  // shared dictionary during compilation, making the later RGD parse resolve
+  // them to readable names.
+  const rgdParent = makeRgdParentLoader(attribBase, dict);
+  const { gameData: compiledGameData } = await luaToRgdResolved(
+    luaCode,
+    dict,
+    rgdParent,
+  );
+
+  const rgdFile = parseRgd(rgdBuf, dict);
+  const rgdMap = flattenRgd(rgdFile.gameData, dict);
+  const compiledMap = flattenRgd(compiledGameData, dict);
+
   if (validateReferences) {
     validationIssues.push(...validateRgdReferences(rgdFile.gameData, attribBase));
-    validationIssues.push(...validateLuaReferences(luaTable, attribBase));
+    validationIssues.push(...validateRgdReferences(compiledGameData, attribBase));
   }
 
   for (const [key, rgdEntry] of rgdMap) {
     if (key.endsWith(".$ref")) continue;
-    const luaEntry = luaMap.get(key);
-    if (!luaEntry) {
+    const compiledEntry = compiledMap.get(key);
+    if (!compiledEntry) {
       issues.push({
         kind: "missing_in_lua",
         key,
         details: `RGD: ${JSON.stringify(rgdEntry.value)} (${rgdEntry.type})`,
       });
-    } else if (!valuesMatch(rgdEntry, luaEntry)) {
+    } else if (!valuesMatch(rgdEntry, compiledEntry)) {
       const numeric = (t: string) => t === "float" || t === "int";
       if (
-        rgdEntry.type !== luaEntry.type &&
+        rgdEntry.type !== compiledEntry.type &&
         !numeric(rgdEntry.type) &&
-        !numeric(luaEntry.type)
+        !numeric(compiledEntry.type)
       ) {
         issues.push({
           kind: "type_mismatch",
           key,
-          details: `RGD=${rgdEntry.type}, Lua=${luaEntry.type}`,
+          details: `RGD=${rgdEntry.type}, Lua=${compiledEntry.type}`,
         });
       } else {
         issues.push({
           kind: "value_mismatch",
           key,
-          details: `RGD=${JSON.stringify(rgdEntry.value)}, Lua=${JSON.stringify(luaEntry.value)}`,
+          details: `RGD=${JSON.stringify(rgdEntry.value)}, Lua=${JSON.stringify(compiledEntry.value)}`,
         });
       }
     }
   }
 
-  for (const [key, luaEntry] of luaMap) {
+  for (const [key, compiledEntry] of compiledMap) {
     if (key.endsWith(".$ref")) continue;
-    if (luaEntry.type === "nil") continue;
+    if (compiledEntry.type === "nil") continue;
     if (!rgdMap.has(key)) {
       issues.push({
         kind: "missing_in_rgd",
         key,
-        details: `Lua: ${JSON.stringify(luaEntry.value)} (${luaEntry.type})`,
+        details: `Lua: ${JSON.stringify(compiledEntry.value)} (${compiledEntry.type})`,
       });
     }
   }
@@ -410,9 +359,9 @@ export function registerParityCommands(context: vscode.ExtensionContext) {
         );
         try {
           const result = await new Promise<ParityResult>((resolve, reject) => {
-            setImmediate(() => {
+            setImmediate(async () => {
               try {
-                resolve(checkParity(rgdPath, luaPath, dict));
+                resolve(await checkParity(rgdPath, luaPath, dict));
               } catch (e) {
                 reject(e);
               }
@@ -616,7 +565,7 @@ export function registerParityCommands(context: vscode.ExtensionContext) {
                   }
                   const { rgd, lua } = checkable[i];
                   try {
-                    onResult(checkParity(rgd, lua, dict, fileCache), rgd);
+                    onResult(await checkParity(rgd, lua, dict, fileCache), rgd);
                   } catch (e) {
                     out.appendLine(
                       `[ERROR] ${path.relative(folder, rgd)}: ${getErrorMessage(e)}`,

@@ -11,22 +11,19 @@ const dist  = workerData.distPath;
 
 const { createAndLoadDictionaries }          = require(path.join(dist, 'dictionary.js'));
 const { parseRgd }                           = require(path.join(dist, 'reader.js'));
-const { parseLuaToTable, rgdToLua }          = require(path.join(dist, 'luaFormat.js'));
+const { luaToRgdResolved }                   = require(path.join(dist, 'luaFormat.js'));
 const { RgdDataType }                        = require(path.join(dist, 'types.js'));
 const {
     validateEncoding,
-    validateLuaReferences,
     validateRgdReferences,
     resolveAttribRefPath,
     stripUtf8Bom,
     stripUtf8BomFromFile,
-    isNilReference,
 } = require(path.join(__dirname, '..', 'cli', 'validators.js'));
 
 const dict = createAndLoadDictionaries(workerData.dictPaths || []);
 
 const FLOAT_EPSILON         = 1e-4;
-const FILE_CACHE_MAX        = 500;
 const ATTRIB_BASE_CACHE_MAX = 2000;
 const attribBaseCache       = new Map();
 
@@ -65,40 +62,27 @@ function findAttribBase(filePath) {
     return null;
 }
 
-function rememberFileCache(cache, key, value) {
-    if (cache.has(key)) cache.delete(key);
-    else if (cache.size >= FILE_CACHE_MAX) {
-        cache.delete(cache.keys().next().value);
-    }
-    cache.set(key, value);
-}
 
-function makeLuaFileLoader(attribBase, cache) {
-    return function loader(refPath) {
+function makeRgdParentLoader(attribBase) {
+    const self = async (refPath) => {
         if (!attribBase) return null;
-        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
-        if (!luaPath) return null;
-        if (cache.has(luaPath)) {
-            const v = cache.get(luaPath);
-            cache.delete(luaPath);
-            cache.set(luaPath, v);
-            return v;
-        }
-        if (fs.existsSync(luaPath)) {
-            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
-            const c = fixed.buffer.toString('utf8');
-            rememberFileCache(cache, luaPath, c);
-            return c;
-        }
+
         const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
         if (rgdPath && fs.existsSync(rgdPath)) {
-            const c = rgdToLua(parseRgd(fs.readFileSync(rgdPath), dict));
-            rememberFileCache(cache, luaPath, c);
-            return c;
+            return parseRgd(fs.readFileSync(rgdPath), dict).gameData;
         }
-        rememberFileCache(cache, luaPath, null);
+
+        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
+        if (luaPath && fs.existsSync(luaPath)) {
+            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
+            const code = fixed.buffer.toString('utf8');
+            const { gameData } = await luaToRgdResolved(code, dict, self);
+            return gameData;
+        }
+
         return null;
     };
+    return self;
 }
 
 function flattenRgd(table, prefix, out) {
@@ -127,30 +111,6 @@ function flattenRgd(table, prefix, out) {
     return out;
 }
 
-function flattenLua(table, prefix, out) {
-    out = out || new Map();
-    prefix = prefix || '';
-    for (const [key, entry] of table.entries) {
-        const full = prefix ? prefix + '.' + key : key;
-        if (entry.type === 'table' && entry.table) {
-            flattenLua(entry.table, full, out);
-        } else {
-            const val = entry.value;
-            if (val === null || val === undefined) {
-                out.set(full, { type: 'nil', value: null });
-            } else if (typeof val === 'boolean') {
-                out.set(full, { type: 'bool', value: val });
-            } else if (typeof val === 'number') {
-                const isFloat = entry.dataType === RgdDataType.Float || !Number.isInteger(val);
-                out.set(full, { type: isFloat ? 'float' : 'int', value: val });
-            } else if (typeof val === 'string') {
-                out.set(full, { type: 'string', value: val });
-            }
-        }
-    }
-    return out;
-}
-
 function valuesMatch(a, b) {
     const num = t => t === 'float' || t === 'int';
     if (num(a.type) && num(b.type)) return Math.abs(a.value - b.value) <= FLOAT_EPSILON;
@@ -159,63 +119,52 @@ function valuesMatch(a, b) {
     return a.value === b.value;
 }
 
-function collectMissingRefs(luaTable, attribBase, prefix) {
-    const issues = [];
-    prefix = prefix || '';
-    for (const [key, entry] of luaTable.entries) {
-        const full = prefix ? prefix + '.' + key : key;
-        if (entry.type === 'table' && entry.reference && attribBase) {
-            if (isNilReference(entry.reference)) continue;
-            let ref = entry.reference.replace(/\\/g, '/');
-            if (!ref.endsWith('.lua')) ref += '.lua';
-            if (!fs.existsSync(path.join(attribBase, ref)))
-                issues.push({ kind: 'missing_ref', key: full, details: 'Reference not found on disk: ' + ref });
-        }
-        if (entry.type === 'table' && entry.table)
-            issues.push(...collectMissingRefs(entry.table, attribBase, full));
-    }
-    return issues;
-}
-
-function checkParity(rgdPath, luaPath, fileCache) {
+async function checkParity(rgdPath, luaPath) {
     const attribBase = findAttribBase(rgdPath) || findAttribBase(luaPath);
-    const luaLoader  = makeLuaFileLoader(attribBase, fileCache);
     const issues     = [];
     const validationIssues = [];
     const fixes = [];
 
-    const rgdFile = parseRgd(fs.readFileSync(rgdPath), dict);
-    const rgdMap  = flattenRgd(rgdFile.gameData);
+    const rgdBuf = fs.readFileSync(rgdPath);
 
     const bomResult = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
     if (bomResult.fix) fixes.push(bomResult.fix);
     const luaBuf = bomResult.buffer;
     validationIssues.push(...validateEncoding(luaBuf, luaPath).issues);
-    const luaTable = parseLuaToTable(stripUtf8Bom(luaBuf.toString('utf8')), luaLoader);
-    const luaMap   = flattenLua(luaTable);
+    const luaCode = stripUtf8Bom(luaBuf.toString('utf8'));
 
-    issues.push(...collectMissingRefs(luaTable, attribBase));
+    // Compile the Lua source to an effective RGD so we compare full, resolved
+    // data instead of the raw source text. Custom key names are added to the
+    // shared dictionary during compilation, making the later RGD parse resolve
+    // them to readable names.
+    const rgdParent = makeRgdParentLoader(attribBase);
+    const { gameData: compiledGameData } = await luaToRgdResolved(luaCode, dict, rgdParent);
+
+    const rgdFile = parseRgd(rgdBuf, dict);
+    const rgdMap  = flattenRgd(rgdFile.gameData);
+    const compiledMap = flattenRgd(compiledGameData);
+
     validationIssues.push(...validateRgdReferences(rgdFile.gameData, attribBase));
-    validationIssues.push(...validateLuaReferences(luaTable, attribBase));
+    validationIssues.push(...validateRgdReferences(compiledGameData, attribBase));
 
     for (const [key, re] of rgdMap) {
         if (key.endsWith('.$ref')) continue;
-        const le = luaMap.get(key);
-        if (!le) {
+        const ce = compiledMap.get(key);
+        if (!ce) {
             issues.push({ kind: 'missing_in_lua', key, details: 'RGD: ' + JSON.stringify(re.value) + ' (' + re.type + ')' });
-        } else if (!valuesMatch(re, le)) {
+        } else if (!valuesMatch(re, ce)) {
             const num = t => t === 'float' || t === 'int';
-            if (re.type !== le.type && !num(re.type) && !num(le.type))
-                issues.push({ kind: 'type_mismatch',  key, details: 'RGD=' + re.type + ', Lua=' + le.type });
+            if (re.type !== ce.type && !num(re.type) && !num(ce.type))
+                issues.push({ kind: 'type_mismatch',  key, details: 'RGD=' + re.type + ', Lua=' + ce.type });
             else
-                issues.push({ kind: 'value_mismatch', key, details: 'RGD=' + JSON.stringify(re.value) + ', Lua=' + JSON.stringify(le.value) });
+                issues.push({ kind: 'value_mismatch', key, details: 'RGD=' + JSON.stringify(re.value) + ', Lua=' + JSON.stringify(ce.value) });
         }
     }
 
-    for (const [key, le] of luaMap) {
-        if (key.endsWith('.$ref') || le.type === 'nil') continue;
+    for (const [key, ce] of compiledMap) {
+        if (key.endsWith('.$ref') || ce.type === 'nil') continue;
         if (!rgdMap.has(key))
-            issues.push({ kind: 'missing_in_rgd', key, details: 'Lua: ' + JSON.stringify(le.value) + ' (' + le.type + ')' });
+            issues.push({ kind: 'missing_in_rgd', key, details: 'Lua: ' + JSON.stringify(ce.value) + ' (' + ce.type + ')' });
     }
 
     return { rgdFile: rgdPath, luaFile: luaPath, totalKeys: rgdMap.size, issues, validationIssues, fixes, attribResolved: !!attribBase };
@@ -223,13 +172,11 @@ function checkParity(rgdPath, luaPath, fileCache) {
 
 // ── Message loop ───────────────────────────────────────────────────────────
 
-const fileCache = new Map();
-
-parentPort.on('message', function ({ id, rgdPath, luaPath }) {
+parentPort.on('message', async ({ id, rgdPath, luaPath }) => {
     try {
-        const result = checkParity(rgdPath, luaPath, fileCache);
+        const result = await checkParity(rgdPath, luaPath);
         parentPort.postMessage({ id, result });
     } catch (e) {
-        parentPort.postMessage({ id, error: e.message });
+        parentPort.postMessage({ id, error: e && e.message ? e.message : String(e) });
     }
 });

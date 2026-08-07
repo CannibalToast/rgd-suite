@@ -227,12 +227,10 @@ function resolveAttribRefPath(refPath, attribBase, extension) {
     // Fallback: search by basename across the attrib tree
     const candidates = resolveRefCandidates(refPath, attribBase);
     for (const candidate of candidates) {
-        // Prefer candidates matching the requested extension if one was specified
+        // Honor the requested extension; callers load the returned path as a
+        // specific file type (.lua or .rgd). Returning a different extension
+        // would cause binary-readers to be fed Lua text (or vice-versa).
         if (extension && !candidate.toLowerCase().endsWith(extension.toLowerCase())) continue;
-        if (isExistingPathInsideBase(candidate, attribBase)) return candidate;
-    }
-    // If no extension-specific match, return any existing candidate
-    for (const candidate of candidates) {
         if (isExistingPathInsideBase(candidate, attribBase)) return candidate;
     }
     return null;
