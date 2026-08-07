@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: 'Create as draft release'
+        type: boolean
+        default: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Package extension
+        run: npx vsce package --no-dependencies
+
+      - name: Extract package version
+        id: pkg
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches package version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "${{ steps.pkg.outputs.version }}" != "$tag_version" ]; then
+            echo "Tag version $tag_version does not match package.json version ${{ steps.pkg.outputs.version }}"
+            exit 1
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rgd-suite-${{ steps.pkg.outputs.version }}.vsix
+          draft: ${{ inputs.draft || false }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
