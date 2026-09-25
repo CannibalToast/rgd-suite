@@ -48,6 +48,20 @@ function valuesEqual(a, b) {
     return a.value === b.value;
 }
 
+function diffStringParts(oldStr, newStr) {
+    const min = Math.min(oldStr.length, newStr.length);
+    let p = 0;
+    while (p < min && oldStr[p] === newStr[p]) p++;
+    let s = 0;
+    while (s < min - p && oldStr[oldStr.length - 1 - s] === newStr[newStr.length - 1 - s]) s++;
+    return {
+        prefix: oldStr.slice(0, p),
+        oldMid: oldStr.slice(p, oldStr.length - s),
+        newMid: newStr.slice(p, newStr.length - s),
+        suffix: oldStr.slice(oldStr.length - s),
+    };
+}
+
 function diffFlatMaps(base, current) {
     const entries = [];
     for (const [key, cur] of current) {
@@ -55,7 +69,11 @@ function diffFlatMaps(base, current) {
         const old = base.get(key);
         if (!old) entries.push({ kind: 'added', key, newValue: cur });
         else if (!valuesEqual(old, cur)) {
-            entries.push({ kind: 'changed', key, oldValue: old, newValue: cur });
+            const entry = { kind: 'changed', key, oldValue: old, newValue: cur };
+            if (old.type === 'string' && cur.type === 'string') {
+                entry.stringDiff = diffStringParts(old.value, cur.value);
+            }
+            entries.push(entry);
         }
     }
     for (const [key, old] of base) {
@@ -115,6 +133,55 @@ test('float epsilon treats near-equal floats as match', () => {
     const base = new Map([['x', { type: 'float', value: 1.0 }]]);
     const current = new Map([['x', { type: 'float', value: 1.0 + 1e-5 }]]);
     assert.strictEqual(diffFlatMaps(base, current).length, 0);
+});
+
+test('diffStringParts isolates appended/removed characters', () => {
+    const appended = diffStringParts(
+        'research\\space_marines\\A_deployment.lua',
+        'research\\space_marines\\A_deployment2.lua',
+    );
+    assert.strictEqual(appended.oldMid, '');
+    assert.strictEqual(appended.newMid, '2');
+    assert.strictEqual(appended.suffix, '.lua');
+    assert.ok(appended.prefix.endsWith('deployment'));
+
+    const removed = diffStringParts('deployment2.lua', 'deployment.lua');
+    assert.strictEqual(removed.oldMid, '2');
+    assert.strictEqual(removed.newMid, '');
+    assert.strictEqual(removed.suffix, '.lua');
+});
+
+test('diffStringParts handles middle edits and full rewrites', () => {
+    const mid = diffStringParts('abcXdef', 'abcYdef');
+    assert.strictEqual(mid.prefix, 'abc');
+    assert.strictEqual(mid.oldMid, 'X');
+    assert.strictEqual(mid.newMid, 'Y');
+    assert.strictEqual(mid.suffix, 'def');
+
+    const all = diffStringParts('aaa', 'bbb');
+    assert.strictEqual(all.prefix, '');
+    assert.strictEqual(all.suffix, '');
+    assert.strictEqual(all.oldMid, 'aaa');
+    assert.strictEqual(all.newMid, 'bbb');
+
+    const equal = diffStringParts('same', 'same');
+    assert.strictEqual(equal.oldMid, '');
+    assert.strictEqual(equal.newMid, '');
+});
+
+test('changed string entries carry char-level stringDiff', () => {
+    const base = new Map([['k', { type: 'string', value: 'file_a.lua' }]]);
+    const current = new Map([['k', { type: 'string', value: 'file_ab.lua' }]]);
+    const [e] = diffFlatMaps(base, current);
+    assert.strictEqual(e.kind, 'changed');
+    assert.strictEqual(e.stringDiff.newMid, 'b');
+    assert.strictEqual(e.stringDiff.oldMid, '');
+
+    const num = diffFlatMaps(
+        new Map([['n', { type: 'float', value: 1 }]]),
+        new Map([['n', { type: 'float', value: 2 }]]),
+    )[0];
+    assert.strictEqual(num.stringDiff, undefined);
 });
 
 test('highlight map marks ancestors of leaf changes', () => {

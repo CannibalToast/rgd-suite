@@ -8,37 +8,79 @@
     const nodeRegistry = new Map();
     /** @type {Record<string, string>} key path -> added|removed|changed */
     let diffHighlight = {};
+    /** Leaf key paths -> kind; ancestors of these get 'diff-descendant' instead. */
+    let diffLeafKinds = {};
+    /** Leaf key paths -> StringDiffParts for changed string scalars. */
+    let diffValueParts = {};
+    /** Leaf key paths -> full TableDiffEntry (merged diff window). */
+    let diffEntryByKey = {};
+    /** Set for virtual documents (e.g. git: URIs in a diff view) — no editing. */
+    const isReadOnly = document.body.dataset.readonly === 'true';
+    /** Merged-diff window: one tree, ghost rows for removals, inline old+new. */
+    const isDiffMode = document.body.dataset.diffmode === 'true';
+    /** Mute window so remotely-applied diff-sync actions don't echo back. */
+    let syncMuteUntil = 0;
+    /** Key path a remote expand is still resolving (waits on lazy children). */
+    let pendingExpand = null;
+    let pendingSelectKey = null;
+    /** Undo/redo stacks of { path:number[], key:string|null, oldValue, newValue }. */
+    const undoStack = [];
+    const redoStack = [];
 
     function init() {
         vscode.postMessage({ type: 'ready' });
 
-        const saveBtn = document.getElementById('save-btn');
-        if (saveBtn) {
-            saveBtn.addEventListener('click', function () {
+        document.querySelectorAll('.save-action').forEach(function (btn) {
+            btn.addEventListener('click', function () {
                 vscode.postMessage({ type: 'save' });
             });
+        });
+
+        // Undo/redo for value edits (simple snapshot stack — the only
+        // mutation this UI performs).
+        const undoBtn = document.getElementById('undo-btn');
+        const redoBtn = document.getElementById('redo-btn');
+        if (undoBtn) undoBtn.addEventListener('click', undoEdit);
+        if (redoBtn) redoBtn.addEventListener('click', redoEdit);
+
+        // Corsix-style find bar above the tree
+        const findInput = document.getElementById('tree-find');
+        const findCase = document.getElementById('tree-find-case');
+        const findChanged = document.getElementById('tree-find-changed');
+        let findTimer = null;
+        function onFindInput() {
+            if (findTimer) clearTimeout(findTimer);
+            findTimer = setTimeout(applyTreeFilter, 250);
         }
+        if (findInput) findInput.addEventListener('input', onFindInput);
+        if (findCase) findCase.addEventListener('change', applyTreeFilter);
+        if (findChanged) findChanged.addEventListener('change', applyTreeFilter);
 
         const gitDiffBtn = document.getElementById('git-diff-btn');
         if (gitDiffBtn) {
             gitDiffBtn.addEventListener('click', function () {
-                updateStatus('Loading git diff…');
+                updateStatus('Opening merged diff…');
                 vscode.postMessage({ type: 'requestGitDiff', ref: 'HEAD' });
             });
         }
 
-        const diffClose = document.getElementById('diff-close');
-        if (diffClose) {
-            diffClose.addEventListener('click', function () {
-                clearDiffUi();
-            });
-        }
-
-        // Keyboard shortcut for save
+        // Keyboard shortcut for save + undo/redo (undo skips text inputs so
+        // the field's own history still works while typing).
         document.addEventListener('keydown', function (e) {
-            if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            if (e.key === 's') {
                 e.preventDefault();
                 vscode.postMessage({ type: 'save' });
+                return;
+            }
+            const tag = document.activeElement && document.activeElement.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+            if (e.key === 'z' || e.key === 'Z') {
+                e.preventDefault();
+                if (e.shiftKey) redoEdit(); else undoEdit();
+            } else if (e.key === 'y') {
+                e.preventDefault();
+                redoEdit();
             }
         });
 
@@ -46,11 +88,8 @@
         const expandAllBtn = document.getElementById('expand-all');
         if (expandAllBtn) {
             expandAllBtn.addEventListener('click', function () {
-                if (!rgdData) return;
-                const treeContent = document.getElementById('tree-content');
-                Array.from(treeContent.children).forEach(function (nodeEl, idx) {
-                    expandNodeDeep(nodeEl, rgdData[idx], [idx], 0);
-                });
+                expandAllTrees();
+                postSync({ action: 'expandAll' });
             });
         }
 
@@ -58,13 +97,22 @@
         const collapseAllBtn = document.getElementById('collapse-all');
         if (collapseAllBtn) {
             collapseAllBtn.addEventListener('click', function () {
-                document.querySelectorAll('.tree-children').forEach(function (el) {
-                    el.classList.remove('expanded');
-                });
-                document.querySelectorAll('.tree-toggle.expanded').forEach(function (t) {
-                    t.classList.remove('expanded');
-                    t.classList.add('collapsed');
-                });
+                collapseAllTrees();
+                postSync({ action: 'collapseAll' });
+            });
+        }
+
+        // Scroll sync for the sibling pane of a git diff view
+        const treeContentEl = document.getElementById('tree-content');
+        if (treeContentEl) {
+            let scrollTimer = null;
+            treeContentEl.addEventListener('scroll', function () {
+                if (scrollTimer) return;
+                scrollTimer = setTimeout(function () {
+                    scrollTimer = null;
+                    const max = treeContentEl.scrollHeight - treeContentEl.clientHeight;
+                    postSync({ action: 'scroll', ratio: max > 0 ? treeContentEl.scrollTop / max : 0 });
+                }, 60);
             });
         }
 
@@ -98,8 +146,24 @@
         const msg = e.data;
         if (msg.type === 'loadData') {
             rgdData = msg.data;
+            if (isDiffMode && msg.diffEntries) {
+                setDiffState(msg.diffEntries, msg.diffHighlight);
+                mergeRemovedEntries(msg.diffEntries);
+                const ch = document.getElementById('tree-find-changed');
+                if (ch) ch.disabled = false;
+                const ds = document.getElementById('diff-status');
+                if (ds) {
+                    ds.textContent = msg.diffError
+                        ? 'diff failed: ' + msg.diffError
+                        : msg.diffEntries.length + ' Δ vs ' + (msg.baseRef || 'HEAD');
+                }
+            }
             renderTree(rgdData);
             if (Object.keys(diffHighlight).length) applyTreeDiffHighlights();
+            undoStack.length = 0;
+            redoStack.length = 0;
+            updateUndoButtons();
+            if (treeFilterActive()) applyTreeFilter();
             updateStatus('Loaded ' + (rgdData ? rgdData.length : 0) + ' nodes');
         } else if (msg.type === 'loadChildren') {
             mergeChildren(rgdData, msg.path, msg.children);
@@ -111,13 +175,18 @@
                 if (parent && parentData) {
                     fillChildren(parent, parentData, msg.path, parent.querySelector('.tree-children'), msg.path.length);
                     if (Object.keys(diffHighlight).length) applyTreeDiffHighlights();
+                    resumePendingExpand();
+                    if (treeFilterActive()) applyTreeFilter();
                 }
             }
+        } else if (msg.type === 'applyDiffSync') {
+            handleDiffSync(msg);
         } else if (msg.type === 'saved') {
             documentDirty = false;
             updateStatus('Saved');
-            const saveBtn = document.getElementById('save-btn');
-            if (saveBtn) saveBtn.classList.remove('dirty');
+            document.querySelectorAll('.save-action').forEach(function (b) {
+                b.classList.remove('dirty');
+            });
         } else if (msg.type === 'gitDiff') {
             showGitDiff(msg);
         } else if (msg.type === 'gitDiffError') {
@@ -130,128 +199,410 @@
 
     function clearDiffUi() {
         diffHighlight = {};
-        document.querySelectorAll('.tree-row.diff-added, .tree-row.diff-removed, .tree-row.diff-changed')
+        diffLeafKinds = {};
+        diffValueParts = {};
+        diffEntryByKey = {};
+        document.querySelectorAll('.tree-row.diff-added, .tree-row.diff-removed, .tree-row.diff-changed, .tree-row.diff-descendant')
             .forEach(function (el) {
-                el.classList.remove('diff-added', 'diff-removed', 'diff-changed');
+                el.classList.remove('diff-added', 'diff-removed', 'diff-changed', 'diff-descendant');
             });
-        const panel = document.getElementById('diff-panel');
-        if (panel) panel.hidden = true;
         const ds = document.getElementById('diff-status');
         if (ds) ds.textContent = '';
+        const ch = document.getElementById('tree-find-changed');
+        if (ch) {
+            ch.disabled = true;
+            ch.checked = false;
+        }
+        applyTreeFilter();
+        if (selectedNode) renderPropertyGrid(selectedNode.node);
     }
 
-    function showGitDiff(msg) {
-        diffHighlight = msg.highlight || {};
-        const entries = msg.entries || [];
-        const panel = document.getElementById('diff-panel');
-        const content = document.getElementById('diff-content');
-        const header = document.getElementById('diff-header-text');
-        if (header) {
-            header.textContent = 'Git Diff vs ' + (msg.baseRef || 'HEAD') +
-                ' — ' + entries.length + ' change' + (entries.length === 1 ? '' : 's');
-        }
-        if (content) {
-            content.replaceChildren();
-            if (entries.length === 0) {
-                const empty = document.createElement('div');
-                empty.className = 'empty-state';
-                empty.textContent = 'No differences vs ' + (msg.baseRef || 'HEAD');
-                content.appendChild(empty);
-            } else {
-                entries.forEach(function (entry) {
-                    content.appendChild(createDiffRow(entry));
-                });
-            }
-        }
-        if (panel) panel.hidden = false;
-        applyTreeDiffHighlights();
-        const ds = document.getElementById('diff-status');
-        if (ds) {
-            ds.textContent = entries.length + ' Δ vs ' + (msg.baseRef || 'HEAD');
-        }
-        updateStatus('Git diff ready (' + entries.length + ' changes)');
-    }
-
-    function createDiffRow(entry) {
-        const row = document.createElement('div');
-        row.className = 'diff-row diff-' + entry.kind;
-        row.title = 'Click to jump in tree';
-        const kind = document.createElement('span');
-        kind.className = 'diff-kind';
-        kind.textContent = entry.kind === 'added' ? '+' : entry.kind === 'removed' ? '−' : '~';
-        const keyEl = document.createElement('span');
-        keyEl.className = 'diff-key';
-        keyEl.textContent = entry.key;
-        const valEl = document.createElement('span');
-        valEl.className = 'diff-vals';
-        if (entry.kind === 'changed') {
-            valEl.textContent = formatScalar(entry.oldValue) + ' → ' + formatScalar(entry.newValue);
-        } else if (entry.kind === 'added') {
-            valEl.textContent = formatScalar(entry.newValue);
-        } else {
-            valEl.textContent = formatScalar(entry.oldValue);
-        }
-        row.appendChild(kind);
-        row.appendChild(keyEl);
-        row.appendChild(valEl);
-        row.addEventListener('click', function () {
-            jumpToKeyPath(entry.key);
+    function setDiffState(entries, highlight) {
+        diffHighlight = highlight || {};
+        diffLeafKinds = {};
+        diffValueParts = {};
+        diffEntryByKey = {};
+        (entries || []).forEach(function (e) {
+            diffLeafKinds[e.key] = e.kind;
+            diffEntryByKey[e.key] = e;
+            if (e.stringDiff) diffValueParts[e.key] = e.stringDiff;
         });
-        return row;
     }
 
-    function formatScalar(s) {
-        if (!s) return '';
-        if (typeof s.value === 'string') return JSON.stringify(s.value);
-        return String(s.value);
+    // A gitDiff broadcast (paired panes / post-save refresh) updates tree
+    // highlights, value-cell blocks and the Δ filter — there is no separate
+    // diff panel any more; the merged window carries the full report.
+    function showGitDiff(msg) {
+        setDiffState(msg.entries, msg.highlight);
+        applyTreeDiffHighlights();
+        const ch = document.getElementById('tree-find-changed');
+        if (ch) ch.disabled = false;
+        if (treeFilterActive()) applyTreeFilter();
+        if (selectedNode) renderPropertyGrid(selectedNode.node);
+        const n = (msg.entries || []).length;
+        const ds = document.getElementById('diff-status');
+        if (ds) ds.textContent = n + ' Δ vs ' + (msg.baseRef || 'HEAD');
+        updateStatus('Git diff ready (' + n + ' changes)');
     }
 
-    function jumpToKeyPath(keyPath) {
-        if (!rgdData || !keyPath) return;
+    // Splice a removed leaf back into the working tree as a ghost node so the
+    // merged diff view can show what was deleted.
+    function materializeGhost(keyPath, oldValue) {
         const parts = keyPath.split('.');
         let list = rgdData;
-        const idxPath = [];
-        for (let i = 0; i < parts.length; i++) {
-            if (!list) return;
-            const want = parts[i];
-            let found = -1;
-            for (let j = 0; j < list.length; j++) {
-                const n = list[j];
-                if ((n.key || n.name) === want) {
-                    found = j;
-                    break;
-                }
+        for (let i = 0; i < parts.length - 1; i++) {
+            let n = list.find(function (x) { return (x.key || x.name) === parts[i]; });
+            if (!n) {
+                n = { key: parts[i], children: [], ghost: true };
+                list.push(n);
             }
-            if (found < 0) return;
-            idxPath.push(found);
-            // Expand ancestors
-            const nodeEl = document.querySelector('[data-path="' + idxPath.join('.') + '"]');
-            if (nodeEl) {
-                const treeNode = nodeEl.closest('.tree-node');
-                const toggle = nodeEl.querySelector('.tree-toggle');
-                const nodeData = getNodeAtPath(rgdData, idxPath);
-                if (treeNode && toggle && nodeData && (nodeData.hasChildren || (nodeData.children && nodeData.children.length))) {
-                    const kids = treeNode.querySelector('.tree-children');
-                    if (kids && !kids.classList.contains('expanded')) {
-                        toggleExpand(treeNode, toggle, nodeData, idxPath.slice(), idxPath.length - 1);
-                    }
-                }
-            }
-            const cur = list[found];
-            list = cur && cur.children ? cur.children : null;
+            if (!n.children) n.children = [];
+            list = n.children;
         }
-        const leaf = getNodeAtPath(rgdData, idxPath);
-        if (leaf) selectNode(leaf, idxPath);
-        const row = nodeRegistry.get(idxPath.join('.'));
-        if (row) row.scrollIntoView({ block: 'center' });
+        const last = parts[parts.length - 1];
+        if (!list.some(function (x) { return (x.key || x.name) === last; })) {
+            list.push({ key: last, value: oldValue, ghost: true });
+        }
+    }
+
+    function mergeRemovedEntries(entries) {
+        (entries || []).forEach(function (e) {
+            if (e.kind === 'removed') materializeGhost(e.key, e.oldValue);
+        });
+    }
+
+    // Escape a string fragment the same way JSON.stringify does, without the
+    // surrounding quotes (caller adds them once around the whole value).
+    function escapeFragment(s) {
+        return JSON.stringify(s || '').slice(1, -1);
+    }
+
+    // Render one side of a char-level string diff: unchanged prefix/suffix in
+    // plain text, the differing middle highlighted (del = red, add = green).
+    function appendInlineDiffValue(container, d, side) {
+        const mid = side === 'old' ? d.oldMid : d.newMid;
+        container.appendChild(document.createTextNode('"' + escapeFragment(d.prefix)));
+        if (mid) {
+            const m = document.createElement('span');
+            m.className = side === 'old' ? 'diff-del' : 'diff-add';
+            m.textContent = escapeFragment(mid);
+            container.appendChild(m);
+        }
+        container.appendChild(document.createTextNode(escapeFragment(d.suffix) + '"'));
+    }
+
+    // Inline char-diff inside a value cell for a changed string scalar: the
+    // HEAD (read-only) pane blocks removed chars red, the working pane blocks
+    // added chars green. Returns null when the key has no stringDiff.
+    function makeValueDiffView(keyPath) {
+        const d = keyPath && diffValueParts[keyPath];
+        if (!d) return null;
+        const div = document.createElement('div');
+        div.className = 'value-diff';
+        appendInlineDiffValue(div, d, isReadOnly ? 'old' : 'new');
+        return div;
+    }
+
+    // Merged-diff value cell: one string with removed chars blocked red and
+    // added chars blocked green — "prefix[old][new]suffix". Non-string
+    // changes show "old → new"; pure adds/removes colour the whole value.
+    function makeMergedValueView(keyPath, nodeValue) {
+        const div = document.createElement('div');
+        div.className = 'value-diff';
+        const fmt = function (v) {
+            return typeof v === 'string' ? JSON.stringify(v) : String(v);
+        };
+        const entry = keyPath ? diffEntryByKey[keyPath] : null;
+        if (nodeValue === undefined || nodeValue === null) return div;
+        if (!entry) {
+            div.textContent = fmt(nodeValue);
+            return div;
+        }
+        const span = function (cls, text) {
+            const s = document.createElement('span');
+            s.className = cls;
+            s.textContent = text;
+            return s;
+        };
+        if (entry.kind === 'added') {
+            div.appendChild(span('diff-add', fmt(entry.newValue)));
+        } else if (entry.kind === 'removed') {
+            div.appendChild(span('diff-del', fmt(entry.oldValue)));
+        } else if (entry.stringDiff) {
+            const d = entry.stringDiff;
+            div.appendChild(document.createTextNode('"' + escapeFragment(d.prefix)));
+            if (d.oldMid) div.appendChild(span('diff-del', escapeFragment(d.oldMid)));
+            if (d.newMid) div.appendChild(span('diff-add', escapeFragment(d.newMid)));
+            div.appendChild(document.createTextNode(escapeFragment(d.suffix) + '"'));
+        } else {
+            div.appendChild(span('diff-del', fmt(entry.oldValue)));
+            div.appendChild(document.createTextNode(' → '));
+            div.appendChild(span('diff-add', fmt(entry.newValue)));
+        }
+        return div;
+    }
+
+    // ── Undo/redo (value edits) ────────────────────────────────────────────
+
+    function updateUndoButtons() {
+        const u = document.getElementById('undo-btn');
+        const r = document.getElementById('redo-btn');
+        if (u) u.disabled = undoStack.length === 0;
+        if (r) r.disabled = redoStack.length === 0;
+    }
+
+    // Mirror of the provider's _updateNodeValue on the webview's copy so
+    // re-renders reflect edits immediately (and undo restores them).
+    function setLocalValue(path, key, value) {
+        const node = getNodeAtPath(rgdData, path);
+        if (!node) return;
+        if (key && node.children) {
+            const child = node.children.find(function (c) { return c.key === key; });
+            if (child) { child.value = value; return; }
+        }
+        node.value = value;
+    }
+
+    function pushEdit(path, key, oldValue, newValue) {
+        undoStack.push({ path: path, key: key, oldValue: oldValue, newValue: newValue });
+        redoStack.length = 0;
+        updateUndoButtons();
+    }
+
+    function applyEditValue(entry, value) {
+        setLocalValue(entry.path, entry.key, value);
+        vscode.postMessage({ type: 'updateValue', path: entry.path, key: entry.key, value: value });
+        if (selectedNode) renderPropertyGrid(selectedNode.node);
+        markDirty();
+    }
+
+    function undoEdit() {
+        const entry = undoStack.pop();
+        if (!entry) return;
+        applyEditValue(entry, entry.oldValue);
+        redoStack.push(entry);
+        updateUndoButtons();
+        updateStatus('Undo');
+    }
+
+    function redoEdit() {
+        const entry = redoStack.pop();
+        if (!entry) return;
+        applyEditValue(entry, entry.newValue);
+        undoStack.push(entry);
+        updateUndoButtons();
+        updateStatus('Redo');
+    }
+
+    // ── Tree find/filter ───────────────────────────────────────────────────
+
+    function treeFilterActive() {
+        const f = document.getElementById('tree-find');
+        const c = document.getElementById('tree-find-changed');
+        return !!(f && f.value) || !!(c && c.checked);
+    }
+
+    function applyTreeFilter() {
+        const f = document.getElementById('tree-find');
+        const mc = document.getElementById('tree-find-case');
+        const ch = document.getElementById('tree-find-changed');
+        const tc = document.getElementById('tree-content');
+        if (!f || !tc) return;
+        const matchCase = !!(mc && mc.checked);
+        const q = matchCase ? f.value : f.value.toLowerCase();
+        const changedOnly = !!(ch && ch.checked);
+        if (!q && !changedOnly) {
+            tc.querySelectorAll('.tree-node').forEach(function (n) { n.style.display = ''; });
+            return;
+        }
+        // Expansion during filtering must not echo to the sibling pane.
+        syncMuteUntil = Date.now() + 500;
+        filterContainer(tc, q, matchCase, changedOnly);
+    }
+
+    // Returns true if any node in this container is visible. Collapsed
+    // subtrees are expanded so their (possibly lazy-loaded) children can be
+    // searched; the loadChildren handler re-runs this filter when they land.
+    function filterContainer(container, q, matchCase, changedOnly) {
+        let anyVisible = false;
+        Array.from(container.children).forEach(function (tn) {
+            if (!tn.classList || !tn.classList.contains('tree-node')) return;
+            const row = tn.querySelector(':scope > .tree-row');
+            if (!row) return;
+            const labelEl = row.querySelector('.tree-label');
+            const label = labelEl ? labelEl.textContent : '';
+            const hay = matchCase ? label : label.toLowerCase();
+            let self = !q || hay.indexOf(q) !== -1;
+            if (self && changedOnly) {
+                // Leaves carry their kind; folders are in the highlight map as
+                // ancestors-of-change, which is exactly what we want to keep.
+                const kp = row.dataset.keyPath;
+                self = !!(kp && (diffLeafKinds[kp] || diffHighlight[kp]));
+            }
+            const kids = tn.querySelector(':scope > .tree-children');
+            if (kids && !kids.classList.contains('expanded')) {
+                const toggle = row.querySelector('.tree-toggle');
+                if (toggle && toggle.classList.contains('collapsed')) {
+                    const path = row.dataset.path.split('.').map(Number);
+                    const nodeData = getNodeAtPath(rgdData, path);
+                    if (nodeData) toggleExpand(tn, toggle, nodeData, path, path.length);
+                }
+            }
+            const childAny = kids ? filterContainer(kids, q, matchCase, changedOnly) : false;
+            const visible = self || childAny;
+            tn.style.display = visible ? '' : 'none';
+            anyVisible = anyVisible || visible;
+        });
+        return anyVisible;
+    }
+
+    // ── Diff-pane sync ────────────────────────────────────────────────────
+    // Paired git:/file: panes relay these through the extension host so both
+    // trees follow the same expansion, selection and scroll position.
+
+    function postSync(payload) {
+        if (Date.now() < syncMuteUntil) return;
+        vscode.postMessage(Object.assign({ type: 'diffSync' }, payload));
+    }
+
+    function findRowByKeyPath(keyPath) {
+        if (!keyPath) return null;
+        return document.querySelector('.tree-row[data-key-path="' + CSS.escape(keyPath) + '"]');
+    }
+
+    // Expand every ancestor prefix of keyPath; returns false when a row isn't
+    // rendered yet because its parent's children are still loading.
+    function expandKeyPathTo(keyPath) {
+        const parts = keyPath.split('.');
+        for (let i = 1; i <= parts.length; i++) {
+            const row = findRowByKeyPath(parts.slice(0, i).join('.'));
+            if (!row) return false;
+            const treeNode = row.closest('.tree-node');
+            const kids = treeNode.querySelector(':scope > .tree-children');
+            if (kids && !kids.classList.contains('expanded')) {
+                const path = row.dataset.path.split('.').map(Number);
+                const nodeData = getNodeAtPath(rgdData, path);
+                const toggle = row.querySelector('.tree-toggle');
+                if (!nodeData || !toggle) return false;
+                toggleExpand(treeNode, toggle, nodeData, path, path.length);
+            }
+        }
+        return true;
+    }
+
+    function resumePendingExpand() {
+        if (pendingExpand && expandKeyPathTo(pendingExpand)) pendingExpand = null;
+        if (pendingSelectKey && !pendingExpand) {
+            const kp = pendingSelectKey;
+            pendingSelectKey = null;
+            navigateToKeyPath(kp);
+        }
+    }
+
+    // Jump the tree to a key path: expand ancestors (queuing the expand when
+    // children are still lazy-loading), then select and reveal the row.
+    function navigateToKeyPath(keyPath) {
+        if (!expandKeyPathTo(keyPath)) {
+            pendingExpand = keyPath;
+            pendingSelectKey = keyPath;
+            return;
+        }
+        const row = findRowByKeyPath(keyPath);
+        if (!row) return;
+        const path = row.dataset.path.split('.').map(Number);
+        const node = getNodeAtPath(rgdData, path);
+        if (!node) return;
+        selectNode(node, path);
+        row.scrollIntoView({ block: 'nearest' });
+    }
+
+    // Property-grid child names link back to the tree row for that child —
+    // lets you jump from a "Table Children" entry to the node itself.
+    function makeChildNavLink(childName, childKeyPath) {
+        const a = el('a', 'prop-nav-link', childName);
+        a.href = '#';
+        a.title = 'Go to ' + childName;
+        a.addEventListener('click', function (e) {
+            e.preventDefault();
+            navigateToKeyPath(childKeyPath);
+        });
+        return a;
+    }
+
+    function collapseKeyPath(keyPath) {
+        const row = findRowByKeyPath(keyPath);
+        if (!row) return;
+        const treeNode = row.closest('.tree-node');
+        const kids = treeNode.querySelector(':scope > .tree-children');
+        if (kids && kids.classList.contains('expanded')) {
+            const path = row.dataset.path.split('.').map(Number);
+            const nodeData = getNodeAtPath(rgdData, path);
+            const toggle = row.querySelector('.tree-toggle');
+            if (nodeData && toggle) toggleExpand(treeNode, toggle, nodeData, path, path.length);
+        }
+    }
+
+    function expandAllTrees() {
+        if (!rgdData) return;
+        const treeContent = document.getElementById('tree-content');
+        Array.from(treeContent.children).forEach(function (nodeEl, idx) {
+            expandNodeDeep(nodeEl, rgdData[idx], [idx], 0);
+        });
+    }
+
+    function collapseAllTrees() {
+        document.querySelectorAll('.tree-children').forEach(function (el) {
+            el.classList.remove('expanded');
+        });
+        document.querySelectorAll('.tree-toggle.expanded').forEach(function (t) {
+            t.classList.remove('expanded');
+            t.classList.add('collapsed');
+        });
+    }
+
+    function handleDiffSync(msg) {
+        syncMuteUntil = Date.now() + 250;
+        if (msg.action === 'scroll') {
+            const tc = document.getElementById('tree-content');
+            if (tc && typeof msg.ratio === 'number') {
+                tc.scrollTop = msg.ratio * Math.max(0, tc.scrollHeight - tc.clientHeight);
+            }
+            return;
+        }
+        if (msg.action === 'toggle') {
+            if (msg.expanded) {
+                pendingExpand = msg.keyPath;
+                resumePendingExpand();
+            } else {
+                collapseKeyPath(msg.keyPath);
+            }
+            return;
+        }
+        if (msg.action === 'expandAll') { expandAllTrees(); return; }
+        if (msg.action === 'collapseAll') { collapseAllTrees(); return; }
+        if (msg.action === 'select') {
+            const row = findRowByKeyPath(msg.keyPath);
+            if (!row) return;
+            const path = row.dataset.path.split('.').map(Number);
+            const node = getNodeAtPath(rgdData, path);
+            if (node) {
+                selectNode(node, path);
+                row.scrollIntoView({ block: 'nearest' });
+            }
+        }
     }
 
     function applyTreeDiffHighlights() {
         document.querySelectorAll('.tree-row').forEach(function (row) {
-            row.classList.remove('diff-added', 'diff-removed', 'diff-changed');
+            row.classList.remove('diff-added', 'diff-removed', 'diff-changed', 'diff-descendant');
             const kp = row.dataset.keyPath;
-            if (kp && diffHighlight[kp]) {
-                row.classList.add('diff-' + diffHighlight[kp]);
+            if (row.dataset.ghost) {
+                row.classList.add('diff-removed');
+            } else if (kp && diffLeafKinds[kp]) {
+                row.classList.add('diff-' + diffLeafKinds[kp]);
+            } else if (kp && diffHighlight[kp]) {
+                // In the highlight map but not a leaf: a folder containing changes.
+                row.classList.add('diff-descendant');
             }
         });
     }
@@ -338,8 +689,13 @@
         row.dataset.path = path.join('.');
         const keyPath = computeKeyPath(node, path);
         row.dataset.keyPath = keyPath;
-        if (diffHighlight[keyPath]) {
-            row.classList.add('diff-' + diffHighlight[keyPath]);
+        if (node.ghost) row.dataset.ghost = '1';
+        if (node.ghost) {
+            row.classList.add('diff-removed');
+        } else if (diffLeafKinds[keyPath]) {
+            row.classList.add('diff-' + diffLeafKinds[keyPath]);
+        } else if (diffHighlight[keyPath]) {
+            row.classList.add('diff-descendant');
         }
         nodeRegistry.set(row.dataset.path, row);
 
@@ -384,9 +740,7 @@
                 return;
             }
             selectNode(node, path);
-            if (hasChildren) {
-                toggleExpand(div, toggle, node, path, depth);
-            }
+            // Expansion is chevron-only — clicking a row selects it.
         });
 
         toggle.addEventListener('click', function (e) {
@@ -429,6 +783,7 @@
             toggle.classList.remove('collapsed');
             toggle.classList.add('expanded');
         }
+        postSync({ action: 'toggle', keyPath: computeKeyPath(node, path), expanded: !isExpanded });
     }
 
     function selectNode(node, path) {
@@ -437,6 +792,7 @@
         if (row) { row.classList.add('selected'); selectedRow = row; }
         selectedNode = { node: node, path: path };
         renderPropertyGrid(node);
+        postSync({ action: 'select', keyPath: computeKeyPath(node, path) });
     }
 
     function el(tag, className, text) {
@@ -469,10 +825,16 @@
         if (opts.dataType) input.dataset.type = opts.dataType;
         if (opts.inputType === 'checkbox') {
             input.checked = !!opts.value;
+            input._lastValue = !!opts.value;
         } else {
             input.value = opts.value == null ? '' : String(opts.value);
+            input._lastValue = opts.value;
         }
         if (opts.step) input.step = opts.step;
+        if (isReadOnly) {
+            input.disabled = true;
+            input.title = 'Read-only (git revision)';
+        }
         input.addEventListener('change', function () {
             const path = input.dataset.path.split('.').map(Number);
             const key = input.dataset.key || null;
@@ -481,6 +843,9 @@
             else if (input.type === 'number') {
                 value = input.step === 'any' ? parseFloat(input.value) : parseInt(input.value, 10);
             } else value = input.value;
+            setLocalValue(path, key, value);
+            pushEdit(path, key, input._lastValue, value);
+            input._lastValue = value;
             vscode.postMessage({ type: 'updateValue', path: path, key: key, value: value });
             markDirty();
         });
@@ -489,7 +854,10 @@
 
     function makePropRow(name, valueNode) {
         const tr = el('tr', 'property-row');
-        tr.appendChild(el('td', 'property-name', name));
+        const nameTd = el('td', 'property-name');
+        if (typeof name === 'string') nameTd.textContent = name;
+        else if (name) nameTd.appendChild(name);
+        tr.appendChild(nameTd);
         const td = el('td', 'property-value');
         if (typeof valueNode === 'string') td.textContent = valueNode;
         else if (valueNode) td.appendChild(valueNode);
@@ -562,6 +930,7 @@
         }
 
         const nodePath = selectedNode ? selectedNode.path : [];
+        const nodeKeyPath = computeKeyPath(node, nodePath);
         content.replaceChildren();
 
         content.appendChild(makeCollapsibleSection(
@@ -569,32 +938,57 @@
             'properties-content',
             function (table) {
                 table.appendChild(makePropRow('Name', node.key || node.name || 'Unknown'));
+                table.appendChild(makePropRow('Data Type', dataType));
+                if (refValue) {
+                    table.appendChild(makePropRow('Reference', makeRefLink(refValue)));
+                }
                 if (!isTable && node.value !== undefined && node.value !== null) {
-                    const inputType = dataType === 'Boolean'
-                        ? 'checkbox'
-                        : (dataType === 'Integer' || dataType === 'Float' ? 'number' : 'text');
-                    const wrap = document.createElement('div');
-                    wrap.appendChild(makeEditableInput({
-                        inputType: inputType,
-                        pathKey: nodePath.join('.'),
-                        dataType: dataType,
-                        value: node.value,
-                        step: dataType === 'Float' ? 'any' : undefined,
-                    }));
-                    if (node.localeText) {
-                        const loc = el('div', null, node.localeText);
-                        loc.style.opacity = '0.6';
-                        loc.style.fontSize = '11px';
-                        loc.style.marginTop = '2px';
-                        wrap.appendChild(loc);
+                    if (isDiffMode) {
+                        table.appendChild(makePropRow('Value', makeMergedValueView(nodeKeyPath, node.value)));
+                    } else {
+                        const inputType = dataType === 'Boolean'
+                            ? 'checkbox'
+                            : (dataType === 'Integer' || dataType === 'Float' ? 'number' : 'text');
+                        const wrap = document.createElement('div');
+                        const valueDiff = makeValueDiffView(nodeKeyPath);
+                        if (isReadOnly && valueDiff) {
+                            wrap.appendChild(valueDiff);
+                        } else {
+                            wrap.appendChild(makeEditableInput({
+                                inputType: inputType,
+                                pathKey: nodePath.join('.'),
+                                dataType: dataType,
+                                value: node.value,
+                                step: dataType === 'Float' ? 'any' : undefined,
+                            }));
+                            if (valueDiff) wrap.appendChild(valueDiff);
+                        }
+                        if (node.localeText) {
+                            const loc = el('div', null, node.localeText);
+                            loc.style.opacity = '0.6';
+                            loc.style.fontSize = '11px';
+                            loc.style.marginTop = '2px';
+                            wrap.appendChild(loc);
+                        }
+                        table.appendChild(makePropRow('Value', wrap));
                     }
-                    table.appendChild(makePropRow(dataType, wrap));
-                } else if (isTable) {
-                    table.appendChild(makePropRow('Data Type', dataType));
                 }
             },
-            refValue || undefined,
         ));
+
+        // Corsix-style info strip at the bottom of the property panel.
+        const info = document.getElementById('property-info');
+        if (info) {
+            const bits = [];
+            const kind = nodeKeyPath && diffLeafKinds[nodeKeyPath];
+            if (kind === 'added') bits.push('Added in working tree');
+            else if (kind === 'removed') bits.push('Removed in working tree');
+            else if (kind === 'changed') bits.push('Changed vs HEAD');
+            else if (nodeKeyPath && diffHighlight[nodeKeyPath]) bits.push('Contains changes vs HEAD');
+            if (refValue) bits.push('References ' + refValue);
+            info.textContent = bits.join('  •  ');
+            info.hidden = bits.length === 0;
+        }
 
         if (hasChildren) {
             const visibleChildren = node.children.filter(function (child) {
@@ -605,8 +999,14 @@
                     'Table Children',
                     'children-content',
                     function (table) {
-                        visibleChildren.forEach(function (child, idx) {
+                        visibleChildren.forEach(function (child) {
+                            // Index into the real children array — filtering
+                            // out $REF shifts positions, and the provider
+                            // resolves edits by this index.
+                            const childIdx = node.children.indexOf(child);
                             const childName = child.key || child.name || 'Unknown';
+                            const childKeyPath =
+                                (nodeKeyPath ? nodeKeyPath + '.' : '') + (child.key || child.name);
                             let childRef = null;
                             if (child.children) {
                                 const refChild = child.children.find(function (c) {
@@ -618,28 +1018,38 @@
                             if (childRef) {
                                 valueNode = makeRefLink(childRef);
                             } else if (child.value !== undefined && child.value !== null) {
-                                const cType = typeof child.value;
-                                const wrap = document.createElement('div');
-                                wrap.appendChild(makeEditableInput({
-                                    inputType: cType === 'boolean' ? 'checkbox' : (cType === 'number' ? 'number' : 'text'),
-                                    pathKey: nodePath.concat([idx]).join('.'),
-                                    keyName: childName,
-                                    value: child.value,
-                                }));
-                                if (child.localeText) {
-                                    const loc = el('div', null, child.localeText);
-                                    loc.style.opacity = '0.6';
-                                    loc.style.fontSize = '11px';
-                                    loc.style.marginTop = '2px';
-                                    wrap.appendChild(loc);
+                                if (isDiffMode) {
+                                    valueNode = makeMergedValueView(childKeyPath, child.value);
+                                } else {
+                                    const cType = typeof child.value;
+                                    const wrap = document.createElement('div');
+                                    const childDiff = makeValueDiffView(childKeyPath);
+                                    if (isReadOnly && childDiff) {
+                                        wrap.appendChild(childDiff);
+                                    } else {
+                                        wrap.appendChild(makeEditableInput({
+                                            inputType: cType === 'boolean' ? 'checkbox' : (cType === 'number' ? 'number' : 'text'),
+                                            pathKey: nodePath.concat([childIdx]).join('.'),
+                                            keyName: childName,
+                                            value: child.value,
+                                        }));
+                                        if (childDiff) wrap.appendChild(childDiff);
+                                    }
+                                    if (child.localeText) {
+                                        const loc = el('div', null, child.localeText);
+                                        loc.style.opacity = '0.6';
+                                        loc.style.fontSize = '11px';
+                                        loc.style.marginTop = '2px';
+                                        wrap.appendChild(loc);
+                                    }
+                                    valueNode = wrap;
                                 }
-                                valueNode = wrap;
                             } else if (child.children && child.children.length > 0) {
                                 const span = el('span', null, '[' + child.children.length + ' items]');
                                 span.style.opacity = '0.6';
                                 valueNode = span;
                             }
-                            table.appendChild(makePropRow(childName, valueNode));
+                            table.appendChild(makePropRow(makeChildNavLink(childName, childKeyPath), valueNode));
                         });
                     },
                 );
@@ -655,8 +1065,9 @@
         if (status) {
             status.textContent = documentDirty ? 'Modified (unsaved)' : 'Ready';
         }
-        const saveBtn = document.getElementById('save-btn');
-        if (saveBtn) saveBtn.classList.add('dirty');
+        document.querySelectorAll('.save-action').forEach(function (b) {
+            b.classList.add('dirty');
+        });
     }
 
     function expandNodeDeep(nodeEl, nodeData, nodePath, depth) {

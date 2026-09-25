@@ -135,6 +135,29 @@ export async function getTreeNodes(
   return { nodes: entry.treeNodes, rgd: entry.rgd, attribRoot };
 }
 
+/**
+ * Build tree nodes from an in-memory RGD buffer (e.g. a git:/virtual URI read
+ * through a FileSystemProvider). Not cached — fsPathHint is only used for
+ * attrib-root detection and locale lookup, and caching under it would poison
+ * the working-tree cache entry.
+ */
+export function getTreeNodesFromBuffer(
+  buffer: Buffer,
+  fsPathHint: string,
+  dict: HashDictionary,
+  options?: { resolvePaths?: boolean },
+): { nodes: RgdNode[]; rgd: RgdFile; attribRoot?: string } {
+  const rgd = parseRgd(buffer, dict);
+  const attribRoot = findAttribBase(fsPathHint) ?? undefined;
+  const localeMap = localeEnabled()
+    ? LocaleManager.getInstance().getLocaleMap(fsPathHint)
+    : undefined;
+  const nodes = rgdToTree(rgd.gameData, attribRoot, localeMap, {
+    resolvePaths: options?.resolvePaths !== false,
+  });
+  return { nodes, rgd, attribRoot };
+}
+
 export function invalidateParsedRgdCache(fsPath?: string): void {
   if (!fsPath) {
     _cache.clear();

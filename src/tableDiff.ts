@@ -25,11 +25,21 @@ export interface FlatScalar {
 
 export type TableDiffKind = "added" | "removed" | "changed";
 
+/** Common prefix/suffix split of two strings so UIs can highlight only the chars that changed. */
+export interface StringDiffParts {
+  prefix: string;
+  oldMid: string;
+  newMid: string;
+  suffix: string;
+}
+
 export interface TableDiffEntry {
   kind: TableDiffKind;
   key: string;
   oldValue?: FlatScalar;
   newValue?: FlatScalar;
+  /** Char-level split for changed string scalars (deleted chars vs added chars). */
+  stringDiff?: StringDiffParts;
 }
 
 export interface TableDiffResult {
@@ -100,12 +110,19 @@ export function diffFlatMaps(
     if (!old) {
       entries.push({ kind: "added", key, newValue: cur });
     } else if (!valuesEqual(old, cur)) {
-      entries.push({
+      const entry: TableDiffEntry = {
         kind: "changed",
         key,
         oldValue: old,
         newValue: cur,
-      });
+      };
+      if (old.type === "string" && cur.type === "string") {
+        entry.stringDiff = diffStringParts(
+          old.value as string,
+          cur.value as string,
+        );
+      }
+      entries.push(entry);
     }
   }
   for (const [key, old] of base) {
@@ -203,6 +220,32 @@ export function diffRgdBuffers(
     baseRef: labels.baseRef ?? "base",
     totalKeys: curMap.size,
     entries: diffFlatMaps(baseMap, curMap),
+  };
+}
+
+/**
+ * Split two strings into common prefix/suffix plus the differing middles.
+ * Renders like an intra-line git diff: oldMid was deleted, newMid was added.
+ */
+export function diffStringParts(
+  oldStr: string,
+  newStr: string,
+): StringDiffParts {
+  const min = Math.min(oldStr.length, newStr.length);
+  let p = 0;
+  while (p < min && oldStr[p] === newStr[p]) p++;
+  let s = 0;
+  while (
+    s < min - p &&
+    oldStr[oldStr.length - 1 - s] === newStr[newStr.length - 1 - s]
+  ) {
+    s++;
+  }
+  return {
+    prefix: oldStr.slice(0, p),
+    oldMid: oldStr.slice(p, oldStr.length - s),
+    newMid: newStr.slice(p, newStr.length - s),
+    suffix: oldStr.slice(oldStr.length - s),
   };
 }
 

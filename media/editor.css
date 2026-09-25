@@ -1,7 +1,11 @@
 /* RGD Editor - Theme-agnostic CSS using VS Code CSS variables */
 /* Corsix-style layout: Tree on left, Property grid on right */
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
 
 body {
     font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
@@ -62,6 +66,14 @@ body {
     background: var(--vscode-button-hoverBackground);
 }
 
+.toolbar-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 8px;
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+}
+
 /* Split View Container */
 .split-view {
     display: flex;
@@ -72,7 +84,7 @@ body {
 /* Left Panel - Tree View (Tables) */
 .tree-panel {
     width: 280px;
-    min-width: 180px;
+    min-width: 120px;
     display: flex;
     flex-direction: column;
     background: var(--vscode-sideBar-background, var(--vscode-editor-background));
@@ -94,6 +106,47 @@ body {
     flex: 1;
     overflow-y: auto;
     padding: 4px 0;
+}
+
+/* Corsix-style find bar above the tree */
+.tree-find {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+.tree-find input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    padding: 2px 6px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 3px;
+    font-size: 11px;
+}
+
+.find-opt {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: 10px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    color: var(--vscode-descriptionForeground);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.find-opt input {
+    margin: 0;
+}
+
+.find-opt input:disabled {
+    opacity: 0.4;
 }
 
 /* Tree Node Styles */
@@ -126,81 +179,57 @@ body {
 .tree-row.diff-added {
     background: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground, #3fb950) 18%, transparent);
 }
+
 .tree-row.diff-removed {
     background: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground, #f85149) 18%, transparent);
     text-decoration: line-through;
     opacity: 0.85;
 }
+
 .tree-row.diff-changed {
     background: color-mix(in srgb, var(--vscode-gitDecoration-modifiedResourceForeground, #d29922) 18%, transparent);
 }
+
+/* Ancestor of a change: left indicator bar on folders containing diffs */
+.tree-row.diff-descendant {
+    box-shadow: inset 3px 0 0 var(--vscode-gitDecoration-modifiedResourceForeground, #d29922);
+}
+
 .tree-row.selected.diff-added,
 .tree-row.selected.diff-removed,
-.tree-row.selected.diff-changed {
+.tree-row.selected.diff-changed,
+.tree-row.selected.diff-descendant {
     outline: 1px solid var(--vscode-focusBorder);
 }
 
-/* Diff panel (right of property grid) */
-.diff-panel {
-    width: 280px;
-    min-width: 200px;
-    max-width: 420px;
-    display: flex;
-    flex-direction: column;
-    border-left: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
-    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+/* Char-level intra-line diff (changed string scalars) */
+.diff-del {
+    background: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground, #f85149) 25%, transparent);
+    color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149);
+    text-decoration: line-through;
+    border-radius: 2px;
+    padding: 0 1px;
 }
-.diff-panel[hidden] {
-    display: none !important;
+
+.diff-add {
+    background: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground, #3fb950) 25%, transparent);
+    color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950);
+    border-radius: 2px;
+    padding: 0 1px;
 }
-.diff-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 6px 10px;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    border-bottom: 1px solid var(--vscode-panel-border);
-    background: var(--vscode-sideBarSectionHeader-background);
-}
-.diff-content {
-    flex: 1;
-    overflow-y: auto;
-    padding: 4px 0;
-}
-.diff-row {
-    display: grid;
-    grid-template-columns: 18px 1fr;
-    grid-template-rows: auto auto;
-    gap: 0 6px;
-    padding: 6px 10px;
-    cursor: pointer;
-    border-bottom: 1px solid color-mix(in srgb, var(--vscode-panel-border) 40%, transparent);
-    font-size: 12px;
-}
-.diff-row:hover {
-    background: var(--vscode-list-hoverBackground);
-}
-.diff-kind {
-    grid-row: 1 / span 2;
-    font-weight: 700;
-    font-family: var(--vscode-editor-font-family, monospace);
-}
-.diff-row.diff-added .diff-kind { color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950); }
-.diff-row.diff-removed .diff-kind { color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149); }
-.diff-row.diff-changed .diff-kind { color: var(--vscode-gitDecoration-modifiedResourceForeground, #d29922); }
-.diff-key {
-    font-family: var(--vscode-editor-font-family, monospace);
+
+/* Inline char-diff inside a property-grid value cell */
+.value-diff {
+    font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+    font-size: var(--vscode-editor-font-size, 13px);
+    padding: 4px 8px;
+    margin-top: 2px;
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 3px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
     word-break: break-all;
-}
-.diff-vals {
-    grid-column: 2;
-    opacity: 0.8;
-    font-size: 11px;
-    word-break: break-all;
+    white-space: pre-wrap;
 }
 
 .tree-toggle {
@@ -214,9 +243,17 @@ body {
     flex-shrink: 0;
 }
 
-.tree-toggle.collapsed::before { content: '▶'; }
-.tree-toggle.expanded::before { content: '▼'; }
-.tree-toggle.leaf { visibility: hidden; }
+.tree-toggle.collapsed::before {
+    content: '▶';
+}
+
+.tree-toggle.expanded::before {
+    content: '▼';
+}
+
+.tree-toggle.leaf {
+    visibility: hidden;
+}
 
 .tree-icon {
     width: 16px;
@@ -231,6 +268,7 @@ body {
 
 .tree-label {
     flex: 1;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -260,7 +298,7 @@ body {
     display: flex;
     flex-direction: column;
     background: var(--vscode-editor-background);
-    min-width: 300px;
+    min-width: 160px;
 }
 
 .property-header {
@@ -279,9 +317,20 @@ body {
     overflow-y: auto;
 }
 
+/* Bottom info strip inside the property panel (diff/ref status) */
+.property-info {
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    word-break: break-all;
+}
+
 /* Property Grid Table */
 .property-grid {
     width: 100%;
+    table-layout: fixed;
     border-collapse: collapse;
 }
 
@@ -317,6 +366,9 @@ body {
     font-weight: 500;
     width: 40%;
     vertical-align: middle;
+    overflow-wrap: anywhere;
+    background: color-mix(in srgb, var(--vscode-sideBarSectionHeader-background, var(--vscode-editorWidget-background)) 55%, transparent);
+    border-right: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
     color: var(--vscode-symbolIcon-propertyForeground, var(--vscode-editor-foreground));
 }
 
@@ -333,6 +385,7 @@ body {
 .property-value {
     padding: 4px 12px;
     vertical-align: middle;
+    overflow-wrap: anywhere;
 }
 
 .property-input {
@@ -380,6 +433,25 @@ body {
     display: inline-block;
     width: 16px;
     margin-right: 4px;
+}
+
+/* Bottom action bar (Undo/Redo + Save) — Corsix-style */
+.action-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+.action-spacer {
+    flex: 1;
+}
+
+.toolbar-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
 }
 
 /* Status Bar */
@@ -430,7 +502,8 @@ body {
     transition: background 0.15s;
 }
 
-.resizer:hover, .resizer.active {
+.resizer:hover,
+.resizer.active {
     background: var(--vscode-focusBorder);
 }
 
@@ -501,6 +574,18 @@ body {
 }
 
 .tree-ref-link:hover {
+    color: var(--vscode-textLink-activeForeground);
+    text-decoration: underline;
+}
+
+/* Property-grid child names that navigate to the tree node */
+.prop-nav-link {
+    color: var(--vscode-textLink-foreground);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.prop-nav-link:hover {
     color: var(--vscode-textLink-activeForeground);
     text-decoration: underline;
 }
