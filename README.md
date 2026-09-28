@@ -31,6 +31,8 @@ Download the `.vsix` from the [Releases](https://github.com/CannibalToast/rgd-su
 
 ## Table Editor
 
+![Table editor: RGD tree on the left, property grid on the right — icon thumbnail, $REF links and resolved locale strings visible](.github/screenshots/table-editor.png)
+
 - Familiar split-pane editor: table tree on the left, properties on the right
 - Inline editing of values (floats, ints, bools and strings) writes back to binary format on save
 - Clickable `$REF` values open the referenced .lua file. Inline hyperlinks to parent files across the workspace
@@ -97,6 +99,8 @@ Results appear in **Output → RGD Parity Checker** with per-key
 
 ## Git Table Diff
 
+![Git diff mode: diff badge in the toolbar, delta count in the status bar](.github/screenshots/git-table-diff.png)
+
 Compare a working-tree `.rgd` against a git revision at the key/value table
 level — not a binary hex dump or lua table dump:
 
@@ -118,6 +122,10 @@ the CLI as `compact-requirements`. Also has a `--dry-run` flag.
 
 The **RGD Suite** right-click submenu covers everyday modding workflows
 (inspired by Corsix Mod Studio):
+
+| | |
+| --- | --- |
+| ![Explorer context menu: RGD Suite submenu with Open, Navigate, Copy and Tools groups](.github/screenshots/explorer-menu.png) | ![RGD Suite Tools submenu: rename pair with reference rewrite, strip BOM, validation and compile entries](.github/screenshots/explorer-menu-tools.png) |
 
 | Area | Commands |
 | --- | --- |
