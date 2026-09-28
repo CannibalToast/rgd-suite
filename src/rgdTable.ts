@@ -1,5 +1,5 @@
 import { RgdTable, RgdValue, RgdDataType, RgdEntry, LocaleEntry } from '../bundled/rgd-tools/dist/types';
-import { resolveAttribPath, tryResolveValuePath, ResolvedPathInfo } from './pathResolver';
+import { resolveAttribPath, tryResolveValuePath, resolveImagePath, ResolvedPathInfo } from './pathResolver';
 import { localeGet } from './localeLoader';
 
 export interface RgdNode {
@@ -13,6 +13,7 @@ export interface RgdNode {
   resolvedExists?: boolean;
   localeId?: string;
   localeText?: string;
+  imagePath?: string;
   localeFile?: string;
   localeLine?: number;
 }
@@ -34,6 +35,12 @@ export function resolveNodePaths(nodes: RgdNode[], attribRoot: string): void {
       if (resolved) {
         node.resolvedPath = resolved.path;
         node.resolvedExists = resolved.exists;
+      }
+      // resolved is truthy even on a miss (exists:false) — only an existing
+      // lua/rgd hit means the value can't also be an image path.
+      if (!resolved || !resolved.exists) {
+        const img = resolveImagePath(node.value, attribRoot);
+        if (img) node.imagePath = img.path;
       }
       if (node.children) walk(node.children);
     }
@@ -73,6 +80,12 @@ export function rgdToTree(
       if (resolved) {
         node.resolvedPath = resolved.path;
         node.resolvedExists = resolved.exists;
+      }
+      // resolved is truthy even on a miss (exists:false) — only an existing
+      // lua/rgd hit means the value can't also be an image path.
+      if (!resolved || !resolved.exists) {
+        const img = resolveImagePath(node.value, attribRoot);
+        if (img) node.imagePath = img.path;
       }
     }
 

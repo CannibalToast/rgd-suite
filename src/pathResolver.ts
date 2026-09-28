@@ -160,19 +160,121 @@ function findInAttribRoot(rel: string, attribRoot: string): string | undefined {
   return undefined;
 }
 
+const IMAGE_EXTS = [
+  ".tga",
+  ".dds",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".bmp",
+  ".gif",
+  ".webp",
+];
+
+// Case-insensitive subdirectory lookup — mod folders mix Data/Art casing.
+function findDirCaseInsensitive(
+  parent: string,
+  name: string,
+): string | undefined {
+  try {
+    const hit = fs
+      .readdirSync(parent, { withFileTypes: true })
+      .find((d) => d.isDirectory() && d.name.toLowerCase() === name);
+    return hit ? path.join(parent, hit.name) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Per-attribRoot image roots — readdir hits add up when resolving per node.
+const _imageRootsCache = new Map<string, string[]>();
+
+/**
+ * Directories to search for image files, given an attrib root. Art sits next
+ * to attrib: <mod>/data/art for the data/attrib layout, <mod>/art or
+ * <mod>/data/art for bare attrib roots. attribRoot itself is last (rare).
+ */
+export function imageSearchRoots(attribRoot: string): string[] {
+  const hit = _imageRootsCache.get(attribRoot);
+  if (hit) return hit;
+  if (_imageRootsCache.size >= _FILENAME_INDEX_MAX_ROOTS) {
+    const firstKey = _imageRootsCache.keys().next().value;
+    if (firstKey !== undefined) _imageRootsCache.delete(firstKey);
+  }
+  const parent = path.dirname(attribRoot);
+  const roots: string[] = [];
+  const add = (dir?: string) => {
+    if (dir && !roots.includes(dir)) roots.push(dir);
+  };
+  add(findDirCaseInsensitive(parent, "art"));
+  if (path.basename(parent).toLowerCase() !== "data") {
+    const dataDir = findDirCaseInsensitive(parent, "data");
+    if (dataDir) add(findDirCaseInsensitive(dataDir, "art"));
+  }
+  add(attribRoot);
+  _imageRootsCache.set(attribRoot, roots);
+  return roots;
+}
+
+/**
+ * Resolve a string value to an image file on disk — any value whose tail
+ * carries an image extension, or an extensionless path tried against each
+ * image extension (icon names like `chaos_icons/hq_upgrade_2_icon` land in
+ * art/ebps/races/<race>/texture_icons/, so tail-match via the filename index
+ * is what actually finds them).
+ */
+export function resolveImagePath(
+  value: unknown,
+  attribRoot: string,
+): ResolvedPathInfo | undefined {
+  if (typeof value !== "string") return undefined;
+  const lower = value.toLowerCase();
+  const hasImgExt = IMAGE_EXTS.some((e) => lower.endsWith(e));
+  if (!hasImgExt && !/[\\/]/.test(value)) return undefined;
+  const base = value.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (
+    !base ||
+    base.includes("\0") ||
+    /^[a-zA-Z]:/.test(base) ||
+    base.split("/").some((p) => p === "..")
+  ) {
+    return undefined;
+  }
+  const tail = base.split("/").pop()!;
+  const dot = tail.lastIndexOf(".");
+  if (dot > 0 && !hasImgExt) return undefined; // real non-image extension
+  const candidates = hasImgExt ? [base] : IMAGE_EXTS.map((e) => base + e);
+  for (const root of imageSearchRoots(attribRoot)) {
+    for (const rel of candidates) {
+      const full = path.resolve(root, ...rel.split("/"));
+      if (fs.existsSync(full)) return { path: full, exists: true };
+    }
+    for (const rel of candidates) {
+      const found = findInAttribRoot(rel, root);
+      if (found) return { path: found, exists: true };
+    }
+  }
+  return undefined;
+}
+
 /**
  * Invalidate filename index for the given attrib root (or all roots if
  * omitted). Call when disk contents change in a watched folder.
  */
 export function invalidateAttribIndex(attribRoot?: string): void {
   if (attribRoot) {
-    _filenameIndexCache.delete(attribRoot);
-    const prefix = attribRoot + "\0";
-    for (const k of _dfsCache.keys()) {
-      if (k.startsWith(prefix)) _dfsCache.delete(k);
+    // Image resolution also indexes the sibling art roots — clear those too.
+    for (const root of [attribRoot, ...imageSearchRoots(attribRoot)]) {
+      _filenameIndexCache.delete(root);
+      const prefix = root + "\0";
+      for (const k of _dfsCache.keys()) {
+        if (k.startsWith(prefix)) _dfsCache.delete(k);
+      }
     }
+    _imageRootsCache.delete(attribRoot);
   } else {
     _filenameIndexCache.clear();
+    _imageRootsCache.clear();
     _dfsCache.clear();
   }
 }

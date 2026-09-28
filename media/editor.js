@@ -26,6 +26,14 @@
     /** Undo/redo stacks of { path:number[], key:string|null, oldValue, newValue }. */
     const undoStack = [];
     const redoStack = [];
+    /** In-flight requestChildren paths (joined) — dedupes lazy prefetches. */
+    const pendingChildFetches = new Set();
+    /** rgdEditor.showImagePreviews — payload flag + live toggle message. */
+    let imagePreviews = true;
+    /** Preview uri -> dataURL | 'pending' | 'error' (decoded/failed fetches). */
+    const iconCache = new Map();
+    /** Coalesces loadChildren-driven grid refreshes into one rAF render. */
+    let gridRefreshQueued = false;
 
     function init() {
         vscode.postMessage({ type: 'ready' });
@@ -146,6 +154,7 @@
         const msg = e.data;
         if (msg.type === 'loadData') {
             rgdData = msg.data;
+            if (typeof msg.showImages === 'boolean') imagePreviews = msg.showImages;
             if (isDiffMode && msg.diffEntries) {
                 setDiffState(msg.diffEntries, msg.diffHighlight);
                 mergeRemovedEntries(msg.diffEntries);
@@ -167,6 +176,7 @@
             updateStatus('Loaded ' + (rgdData ? rgdData.length : 0) + ' nodes');
         } else if (msg.type === 'loadChildren') {
             mergeChildren(rgdData, msg.path, msg.children);
+            pendingChildFetches.delete(msg.path.join('.'));
             const pathKey = msg.path.join('.');
             const nodeEl = document.querySelector('[data-path="' + pathKey + '"]');
             if (nodeEl) {
@@ -179,6 +189,31 @@
                     if (treeFilterActive()) applyTreeFilter();
                 }
             }
+            // Selecting a lazy folder fires requestChildren — refresh the
+            // property grid once its children arrive. Also matches loads
+            // deeper inside the selected node (Table Children rows fetch
+            // their own children to resolve $REF values). Coalesced through
+            // rAF so N arriving children cost one re-render, and skipped
+            // while a grid input has focus so an edit isn't clobbered.
+            if (selectedNode && !gridRefreshQueued) {
+                const selKey = selectedNode.path.join('.');
+                if (pathKey === selKey || pathKey.indexOf(selKey + '.') === 0) {
+                    gridRefreshQueued = true;
+                    requestAnimationFrame(function () {
+                        gridRefreshQueued = false;
+                        const ae = document.activeElement;
+                        const propContent = document.getElementById('property-content');
+                        const typing = ae && propContent && propContent.contains(ae)
+                            && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
+                        if (!typing && selectedNode) {
+                            renderPropertyGrid(selectedNode.node);
+                        }
+                    });
+                }
+            }
+        } else if (msg.type === 'imagePreviews') {
+            imagePreviews = !!msg.enabled;
+            if (selectedNode) renderPropertyGrid(selectedNode.node);
         } else if (msg.type === 'applyDiffSync') {
             handleDiffSync(msg);
         } else if (msg.type === 'saved') {
@@ -626,6 +661,15 @@
         if (parent) parent.children = children;
     }
 
+    // requestChildren with dedupe — lazy rows can be rendered (and so
+    // re-requested) several times before the response lands.
+    function fetchChildren(path) {
+        const k = path.join('.');
+        if (pendingChildFetches.has(k)) return;
+        pendingChildFetches.add(k);
+        vscode.postMessage({ type: 'requestChildren', path: path });
+    }
+
     function getNodeAtPath(nodes, nodePath) {
         let list = nodes;
         let current = null;
@@ -637,11 +681,34 @@
         return current;
     }
 
+    // Display order for a node's children: required_* entries sorted by
+    // numeric suffix, everything else in file order. Returns an index
+    // permutation — callers index back into the same array so tree paths and
+    // edits still reference real positions (the binary stores entries
+    // hash-sorted, which is why required_1 can sit last on disk).
+    const REQ_NUM_RE = /^required_(\d+)$/i;
+    function displayOrder(children) {
+        const order = children.map(function (_, i) { return i; });
+        const reqIdx = [];
+        for (let i = 0; i < children.length; i++) {
+            const n = children[i].key || children[i].name || '';
+            if (REQ_NUM_RE.test(n)) reqIdx.push(i);
+        }
+        if (reqIdx.length < 2) return order;
+        const sorted = reqIdx.slice().sort(function (a, b) {
+            const na = children[a].key || children[a].name;
+            const nb = children[b].key || children[b].name;
+            return parseInt(REQ_NUM_RE.exec(na)[1], 10) - parseInt(REQ_NUM_RE.exec(nb)[1], 10);
+        });
+        reqIdx.forEach(function (idx, k) { order[idx] = sorted[k]; });
+        return order;
+    }
+
     function fillChildren(nodeEl, node, path, childrenDiv, depth) {
         if (!childrenDiv || !node.children) return;
         childrenDiv.replaceChildren();
-        node.children.forEach(function (child, idx) {
-            childrenDiv.appendChild(createTreeNode(child, path.concat([idx]), depth + 1));
+        displayOrder(node.children).forEach(function (realIdx) {
+            childrenDiv.appendChild(createTreeNode(node.children[realIdx], path.concat([realIdx]), depth + 1));
         });
     }
 
@@ -865,6 +932,54 @@
         return tr;
     }
 
+    const ICON_NATIVE_RE = /\.(png|jpe?g|gif|bmp|webp|ico)([?#]|$)/i;
+
+    // Thumbnail for a value that resolved to an image file. Browser-native
+    // formats go straight to <img>; TGA/DDS are fetched and decoded via
+    // media/tga.js + media/dds.js into a cached dataURL, and the grid
+    // re-renders once it lands. Failures hide instead of breaking.
+    function makeImagePreview(uri) {
+        const img = document.createElement('img');
+        img.className = 'prop-icon';
+        img.alt = '';
+        img.title = uri;
+        const cached = iconCache.get(uri);
+        if (ICON_NATIVE_RE.test(uri)) {
+            img.src = uri;
+            img.addEventListener('error', function () { img.hidden = true; });
+        } else if (cached === 'error') {
+            img.hidden = true;
+        } else if (typeof cached === 'string') {
+            img.src = cached;
+        } else {
+            img.hidden = true;
+            if (cached !== 'pending') {
+                iconCache.set(uri, 'pending');
+                fetch(uri).then(function (res) {
+                    if (!res.ok) throw new Error('http ' + res.status);
+                    return res.arrayBuffer();
+                }).then(function (buf) {
+                    const decode = /\.dds([?#]|$)/i.test(uri) ? decodeDds : decodeTga;
+                    const img = decode(new Uint8Array(buf));
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    canvas.getContext('2d').putImageData(
+                        new ImageData(
+                            new Uint8ClampedArray(img.rgba),
+                            img.width, img.height,
+                        ), 0, 0);
+                    iconCache.set(uri, canvas.toDataURL('image/png'));
+                    if (selectedNode) renderPropertyGrid(selectedNode.node);
+                }).catch(function () {
+                    iconCache.set(uri, 'error');
+                    if (selectedNode) renderPropertyGrid(selectedNode.node);
+                });
+            }
+        }
+        return img;
+    }
+
     function makeCollapsibleSection(title, contentId, bodyBuild, refPath) {
         const section = el('div', 'collapsible-section');
         const headTable = el('table', 'property-grid');
@@ -907,7 +1022,7 @@
         const header = document.getElementById('property-header-text');
         if (header) header.textContent = 'PROPERTIES';
 
-        const hasChildren = node.children && node.children.length > 0;
+        const hasChildren = node.hasChildren || (node.children && node.children.length > 0);
         const isTable = hasChildren;
 
         let refValue = null;
@@ -990,23 +1105,39 @@
             info.hidden = bits.length === 0;
         }
 
-        if (hasChildren) {
-            const visibleChildren = node.children.filter(function (child) {
-                return child.key !== '$REF' && child.name !== '$REF';
+        if (hasChildren && !node.children) {
+            // Lazy folder whose children haven't been fetched — request them
+            // so a plain row click fills this panel; the loadChildren handler
+            // re-renders the grid while this node stays selected.
+            fetchChildren(nodePath);
+            const loading = el('div', 'prop-loading', 'Loading children…');
+            loading.style.opacity = '0.6';
+            loading.style.padding = '8px 12px';
+            content.appendChild(loading);
+        } else if (hasChildren) {
+            const childOrder = displayOrder(node.children).filter(function (i) {
+                const c = node.children[i];
+                return c.key !== '$REF' && c.name !== '$REF';
             });
-            if (visibleChildren.length > 0) {
+            if (childOrder.length > 0) {
                 const childrenSection = makeCollapsibleSection(
                     'Table Children',
                     'children-content',
                     function (table) {
-                        visibleChildren.forEach(function (child) {
-                            // Index into the real children array — filtering
-                            // out $REF shifts positions, and the provider
-                            // resolves edits by this index.
-                            const childIdx = node.children.indexOf(child);
+                        childOrder.forEach(function (childIdx) {
+                            // childIdx is the real index into node.children —
+                            // $REF filtering and display sorting only affect
+                            // what's rendered, not positions.
+                            const child = node.children[childIdx];
                             const childName = child.key || child.name || 'Unknown';
                             const childKeyPath =
                                 (nodeKeyPath ? nodeKeyPath + '.' : '') + (child.key || child.name);
+                            // Lazy table child — its $REF/scalars live in
+                            // children that load on expand; fetch them now so
+                            // the row isn't blank until chevron-opened.
+                            if (child.hasChildren && !child.children) {
+                                fetchChildren(nodePath.concat([childIdx]));
+                            }
                             let childRef = null;
                             if (child.children) {
                                 const refChild = child.children.find(function (c) {
@@ -1049,6 +1180,12 @@
                                 span.style.opacity = '0.6';
                                 valueNode = span;
                             }
+                            if (imagePreviews && child.imageUri) {
+                                const holder = el('div', 'prop-value-media');
+                                holder.appendChild(makeImagePreview(child.imageUri));
+                                if (valueNode) holder.appendChild(valueNode);
+                                valueNode = holder;
+                            }
                             table.appendChild(makePropRow(makeChildNavLink(childName, childKeyPath), valueNode));
                         });
                     },
@@ -1081,7 +1218,7 @@
             if (nodeData.children && nodeData.children.length > 0) {
                 fillChildren(nodeEl, nodeData, nodePath, childrenDiv, depth);
             } else if (nodeData.hasChildren) {
-                vscode.postMessage({ type: 'requestChildren', path: nodePath });
+                fetchChildren(nodePath);
                 return;
             }
         }
@@ -1095,7 +1232,11 @@
             for (; idx < end; idx++) {
                 const childEl = childrenDiv.children[idx];
                 if (childEl) {
-                    expandNodeDeep(childEl, kids[idx], nodePath.concat([idx]), depth + 1);
+                    // DOM order is display order — recover the real index
+                    // from the row's stored path (required_* may sort ahead).
+                    const row = childEl.querySelector(':scope > .tree-row');
+                    const realIdx = row ? Number(row.dataset.path.split('.').pop()) : idx;
+                    expandNodeDeep(childEl, kids[realIdx], nodePath.concat([realIdx]), depth + 1);
                 }
             }
             if (idx < kids.length) requestAnimationFrame(expandNextBatch);

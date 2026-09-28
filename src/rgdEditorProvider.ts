@@ -5,6 +5,7 @@ import { treeToRgd, RgdNode } from "./rgdTable";
 import { writeRgdFile } from "../bundled/rgd-tools/dist/writer";
 import { DictionaryManager } from "./dictionaryManager";
 import { findAttribBase } from "./attribUtils";
+import { imageSearchRoots } from "./pathResolver";
 import { getErrorMessage } from "./errorUtils";
 import {
   getTreeNodes,
@@ -17,7 +18,10 @@ import {
   TableDiffResult,
 } from "./tableDiff";
 
-function shallowTreePayload(nodes: RgdNode[]): Record<string, unknown>[] {
+function shallowTreePayload(
+  nodes: RgdNode[],
+  webview?: vscode.Webview,
+): Record<string, unknown>[] {
   return nodes.map((n) => ({
     key: n.key,
     hash: n.hash,
@@ -30,17 +34,24 @@ function shallowTreePayload(nodes: RgdNode[]): Record<string, unknown>[] {
     localeText: n.localeText,
     localeFile: n.localeFile,
     localeLine: n.localeLine,
+    imageUri:
+      n.imagePath && webview
+        ? webview.asWebviewUri(vscode.Uri.file(n.imagePath)).toString()
+        : undefined,
     hasChildren: !!(n.children && n.children.length > 0),
     childCount: n.children?.length ?? 0,
   }));
 }
 
 /** Like shallowTreePayload but includes children recursively. */
-function deepTreePayload(nodes: RgdNode[]): Record<string, unknown>[] {
+function deepTreePayload(
+  nodes: RgdNode[],
+  webview?: vscode.Webview,
+): Record<string, unknown>[] {
   return nodes.map((n) => {
-    const flat = shallowTreePayload([n])[0];
+    const flat = shallowTreePayload([n], webview)[0];
     if (n.children && n.children.length > 0) {
-      flat.children = deepTreePayload(n.children);
+      flat.children = deepTreePayload(n.children, webview);
     }
     return flat;
   });
@@ -90,7 +101,45 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
     private readonly _extensionUri: vscode.Uri,
     private readonly context: vscode.ExtensionContext,
     private readonly dictionaryManager: DictionaryManager,
-  ) { }
+  ) {
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration("rgdEditor.showImagePreviews")) {
+          this._broadcastImagePreviews();
+        }
+      }),
+    );
+  }
+
+  private _showImagePreviews(): boolean {
+    return vscode.workspace
+      .getConfiguration("rgdEditor")
+      .get("showImagePreviews", true);
+  }
+
+  private _broadcastImagePreviews(): void {
+    const msg = { type: "imagePreviews", enabled: this._showImagePreviews() };
+    for (const panels of this._panels.values()) {
+      for (const p of panels) void p.webview.postMessage(msg);
+    }
+    for (const p of this._diffPanels.values()) {
+      void p.webview.postMessage(msg);
+    }
+  }
+
+  /**
+   * extensionUri for media; image search roots (art/ + attrib) so the webview
+   * can load previewed icons that live inside the mod folder.
+   */
+  private _localResourceRoots(attribRoot?: string): vscode.Uri[] {
+    const roots = [this._extensionUri];
+    if (attribRoot) {
+      for (const dir of imageSearchRoots(attribRoot)) {
+        roots.push(vscode.Uri.file(dir));
+      }
+    }
+    return roots;
+  }
 
   async openCustomDocument(
     uri: vscode.Uri,
@@ -105,9 +154,10 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
     webviewPanel: vscode.WebviewPanel,
     _token: vscode.CancellationToken,
   ): Promise<void> {
+    const attribRoot = findAttribBase(document.uri.fsPath) ?? undefined;
     webviewPanel.webview.options = {
       enableScripts: true,
-      localResourceRoots: [this._extensionUri],
+      localResourceRoots: this._localResourceRoots(attribRoot),
     };
 
     try {
@@ -127,7 +177,6 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
           dict,
           { resolvePaths: false },
         );
-      const attribRoot = findAttribBase(document.uri.fsPath) ?? undefined;
 
       document.rgdVersion = rgd.header.version;
       document.nodes = nodes;
@@ -170,7 +219,11 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
             case "ready":
               webviewPanel.webview.postMessage({
                 type: "loadData",
-                data: shallowTreePayload(document.nodes),
+                data: shallowTreePayload(
+                  document.nodes,
+                  webviewPanel.webview,
+                ),
+                showImages: this._showImagePreviews(),
               });
               // A second panel on the same fsPath is a diff view — push the
               // diff so both trees highlight without a manual Git Diff click.
@@ -191,7 +244,10 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
               webviewPanel.webview.postMessage({
                 type: "loadChildren",
                 path: nodePath,
-                children: shallowTreePayload(parent?.children ?? []),
+                children: shallowTreePayload(
+                  parent?.children ?? [],
+                  webviewPanel.webview,
+                ),
               });
               break;
             }
@@ -263,7 +319,11 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
                 webviewPanel.webview.postMessage({ type: "saved" });
                 webviewPanel.webview.postMessage({
                   type: "loadData",
-                  data: shallowTreePayload(document.nodes),
+                  data: shallowTreePayload(
+                    document.nodes,
+                    webviewPanel.webview,
+                  ),
+                  showImages: this._showImagePreviews(),
                 });
                 vscode.window.showInformationMessage("RGD saved and reloaded");
                 // Keep paired diff panes' highlights truthful after a save.
@@ -364,6 +424,12 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._extensionUri, "media", "editor.js"),
     );
+    const tgaUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, "media", "tga.js"),
+    );
+    const ddsUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, "media", "dds.js"),
+    );
     const styleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._extensionUri, "media", "editor.css"),
     );
@@ -373,6 +439,7 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
       `style-src ${webview.cspSource} 'unsafe-inline'`,
       `script-src 'nonce-${nonce}'`,
       `img-src ${webview.cspSource} data:`,
+      `connect-src ${webview.cspSource}`,
       `font-src ${webview.cspSource}`,
     ].join("; ");
     const safeTitle = this._escapeHtml(path.basename(filePath));
@@ -431,6 +498,8 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
             <div class="status-item"><span>${nodes.length} top-level nodes</span></div>
         </div>
     </div>
+    <script nonce="${nonce}" src="${tgaUri}"></script>
+    <script nonce="${nonce}" src="${ddsUri}"></script>
     <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -492,18 +561,19 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
     }
     const result: TableDiffResult = await diffRgdAgainstGit(fsPath, dict, "HEAD");
     const entries = result.error ? [] : result.entries;
-    const payload = {
+    const makePayload = (wv: vscode.Webview) => ({
       type: "loadData",
-      data: deepTreePayload(nodes),
+      data: deepTreePayload(nodes, wv),
+      showImages: this._showImagePreviews(),
       diffEntries: entries,
       diffHighlight: buildDiffHighlightMap(entries),
       baseRef: result.baseRef || "HEAD",
       diffError: result.error || null,
-    };
+    });
 
     if (existing) {
       existing.reveal();
-      existing.webview.postMessage(payload);
+      existing.webview.postMessage(makePayload(existing.webview));
       return;
     }
 
@@ -511,7 +581,12 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
       "rgdMergedDiff",
       `Diff: ${path.basename(fsPath)}`,
       vscode.ViewColumn.Active,
-      { enableScripts: true, localResourceRoots: [this._extensionUri] },
+      {
+        enableScripts: true,
+        localResourceRoots: this._localResourceRoots(
+          findAttribBase(fsPath) ?? undefined,
+        ),
+      },
     );
 
     this._diffPanels.set(fsPath, panel);
@@ -527,7 +602,7 @@ export class RgdEditorProvider implements vscode.CustomReadonlyEditorProvider<Rg
     );
     panel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
       if (message.type === "ready") {
-        panel.webview.postMessage(payload);
+        panel.webview.postMessage(makePayload(panel.webview));
       } else if (message.type === "openRef" && message.ref) {
         const refPath = String(message.ref).replace(/\\/g, "/");
         const hasExtension = /\.(lua|rgd|scar|ai)$/i.test(refPath);

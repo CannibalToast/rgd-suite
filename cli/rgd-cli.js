@@ -14,13 +14,13 @@ const os = require('os');
 const dist = path.join(__dirname, '..', 'bundled', 'rgd-tools', 'dist');
 
 const { createAndLoadDictionaries } = require(path.join(dist, 'dictionary.js'));
-const { readRgdFile, parseRgd }       = require(path.join(dist, 'reader.js'));
-const { writeRgdFile }                = require(path.join(dist, 'writer.js'));
-const { rgdToText, textToRgd }        = require(path.join(dist, 'textFormat.js'));
+const { readRgdFile, parseRgd } = require(path.join(dist, 'reader.js'));
+const { writeRgdFile } = require(path.join(dist, 'writer.js'));
+const { rgdToText, textToRgd } = require(path.join(dist, 'textFormat.js'));
 const { rgdToLua, rgdToLuaDifferential, luaToRgdResolved, parseLuaToTable } = require(path.join(dist, 'luaFormat.js'));
-const { hash, hashToHex }             = require(path.join(dist, 'hash.js'));
-const { openSgaArchive }              = require(path.join(dist, 'sga.js'));
-const { RgdDataType }                 = require(path.join(dist, 'types.js'));
+const { hash, hashToHex } = require(path.join(dist, 'hash.js'));
+const { openSgaArchive } = require(path.join(dist, 'sga.js'));
+const { RgdDataType } = require(path.join(dist, 'types.js'));
 const {
     validateEncoding,
     validateFilePath,
@@ -30,6 +30,7 @@ const {
     stripUtf8Bom,
     stripUtf8BomFromFile,
 } = require('./validators');
+const { compactRequirements } = require('./requirements');
 
 // ── Argument parsing ─────────────────────────────────────────────────────
 
@@ -111,9 +112,9 @@ function findAttribBase(filePath) {
     let dir = path.dirname(filePath);
     for (let d = 0; d < 15; d++) {
         const da = path.join(dir, 'data', 'attrib');
-        const a  = path.join(dir, 'attrib');
+        const a = path.join(dir, 'attrib');
         if (fs.existsSync(da)) return da;
-        if (fs.existsSync(a))  return a;
+        if (fs.existsSync(a)) return a;
         const parent = path.dirname(dir);
         if (parent === dir) break;
         dir = parent;
@@ -225,14 +226,14 @@ function flattenRgd(table, prefix, out) {
             case RgdDataType.TableInt:
                 if (entry.value) flattenRgd(entry.value, full, out);
                 break;
-            case RgdDataType.Float:   out.set(full, { type: 'float', value: entry.value }); break;
+            case RgdDataType.Float: out.set(full, { type: 'float', value: entry.value }); break;
             case RgdDataType.Integer: out.set(full, { type: 'int', value: entry.value }); break;
-            case RgdDataType.Bool:    out.set(full, { type: 'bool', value: entry.value }); break;
+            case RgdDataType.Bool: out.set(full, { type: 'bool', value: entry.value }); break;
             case RgdDataType.String:
             case RgdDataType.WString:
                 if (k !== '$REF') out.set(full, { type: 'string', value: entry.value });
                 break;
-            case RgdDataType.NoData:  out.set(full, { type: 'nil', value: null }); break;
+            case RgdDataType.NoData: out.set(full, { type: 'nil', value: null }); break;
         }
     }
     return out;
@@ -466,9 +467,9 @@ const COMMANDS = {
         const { gameData, version } = textToRgd(text, dict);
         // Special-case: foo.rgd.txt -> foo.rgd, otherwise strip .txt or append .rgd
         let defaultOut = input;
-        if (defaultOut.toLowerCase().endsWith('.rgd.txt'))      defaultOut = defaultOut.slice(0, -4);
-        else if (defaultOut.toLowerCase().endsWith('.txt'))     defaultOut = defaultOut.slice(0, -4) + '.rgd';
-        else                                                     defaultOut += '.rgd';
+        if (defaultOut.toLowerCase().endsWith('.rgd.txt')) defaultOut = defaultOut.slice(0, -4);
+        else if (defaultOut.toLowerCase().endsWith('.txt')) defaultOut = defaultOut.slice(0, -4) + '.rgd';
+        else defaultOut += '.rgd';
         const out = getOpt(argv, ['-o', '--output'], defaultOut);
         const versionStr = getOpt(argv, ['--version']);
         const finalVersion = versionStr ? parseInt(versionStr, 10) : version;
@@ -749,6 +750,28 @@ const COMMANDS = {
         if (entries.length) process.exitCode = 1;
     },
 
+    async 'compact-requirements'(argv) {
+        const [input] = positionals(argv, VALUE_FLAGS);
+        if (!input) usage('compact-requirements <input.rgd> [-o output.rgd] [--dry-run]');
+        const dryRun = argv.includes('--dry-run');
+        const dict = getDict(argv);
+        const rgd = readRgdFile(input, dict);
+        const report = compactRequirements(rgd.gameData, dict);
+        if (!report.length) { console.log('No required_* waste found'); return; }
+        let dropped = 0;
+        for (const r of report) {
+            dropped += r.dropped;
+            const ren = r.renames.length
+                ? '  renumbered: ' + r.renames.map(([a, b]) => `${a}→${b}`).join(', ')
+                : '';
+            console.log(`${r.path}: kept ${r.kept}, dropped ${r.dropped}${ren}`);
+        }
+        if (dryRun) { console.log(`Dry run — ${dropped} slot(s) would be dropped`); return; }
+        const out = getOpt(argv, ['-o', '--output'], input);
+        writeRgdFile(out, rgd.gameData, dict, rgd.header.version);
+        console.log(`Wrote ${out} (${dropped} slot(s) dropped)`);
+    },
+
     async 'help'() {
         showHelp(0);
     }
@@ -775,6 +798,9 @@ Commands:
   parity-batch <folder>            Compare all RGD/Lua pairs in a folder
   validate <file|folder>           Validate encoding, paths and references
   table-diff <input.rgd>           Diff working RGD against a git revision
+  compact-requirements <input.rgd> Drop required_none slots and renumber
+                                   required_* children contiguously
+                                   [-o output.rgd] [--dry-run]
 
 Global options (where applicable):
   -d, --dictionary <path>          Additional hash dictionary file or folder
@@ -802,7 +828,7 @@ function usage(msg) {
 // ── Entry point ──────────────────────────────────────────────────────────
 
 (async () => {
-    const [,, cmd, ...args] = process.argv;
+    const [, , cmd, ...args] = process.argv;
     if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
         await COMMANDS['help']();
         return;

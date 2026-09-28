@@ -418,6 +418,29 @@ body {
     color: var(--vscode-textLink-foreground);
 }
 
+/* Image preview inside a value cell — icon left, value/input right */
+.prop-value-media {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.prop-icon {
+    width: 96px;
+    height: 96px;
+    object-fit: contain;
+    image-rendering: pixelated;
+    background: var(--vscode-textCodeBlock-background);
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 3px;
+    flex: none;
+}
+
+.prop-value-media> :last-child {
+    flex: 1;
+    min-width: 0;
+}
+
 /* Category Row */
 .category-row {
     background: var(--vscode-editorWidget-background);

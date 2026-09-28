@@ -23,9 +23,22 @@ import { stripUtf8BomFromFile } from "./validators";
 import { defaultWorkerCount, scheduleBatched } from "./taskScheduling";
 import { invalidateAttribIndex } from "./pathResolver";
 import { invalidateParsedRgdCache } from "./parsedRgdCache";
+import type {
+  HashDictionary,
+  RgdTable,
+} from "../bundled/rgd-tools/dist/types";
+
+// Shared with cli/rgd-cli.js — plain JS module, no .d.ts.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { compactRequirements } = require("../cli/requirements") as {
+  compactRequirements(
+    gameData: RgdTable,
+    dict: HashDictionary,
+  ): { path: string; dropped: number; kept: number }[];
+};
 
 export class RgdCommands {
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  constructor(private readonly context: vscode.ExtensionContext) { }
 
   private getDictionary() {
     return DictionaryManager.getInstance().getDictionary(this.context);
@@ -103,6 +116,53 @@ export class RgdCommands {
     } catch (error) {
       vscode.window.showErrorMessage(
         `Failed to convert: ${getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  async organizeRequirements(uri?: vscode.Uri): Promise<void> {
+    uri = uri || vscode.window.activeTextEditor?.document.uri;
+
+    if (!uri) {
+      const files = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        filters: { "RGD Files": ["rgd"] },
+      });
+      if (files && files.length > 0) uri = files[0];
+    }
+    if (!uri) {
+      vscode.window.showErrorMessage("No RGD file selected");
+      return;
+    }
+
+    try {
+      const dict = this.getDictionary();
+      const rgd = readRgdFile(uri.fsPath, dict);
+      const report = compactRequirements(rgd.gameData, dict);
+      if (!report.length) {
+        vscode.window.showInformationMessage(
+          `${path.basename(uri.fsPath)}: no empty required_* slots to organize`,
+        );
+        return;
+      }
+      const dropped = report.reduce((n, r) => n + r.dropped, 0);
+      const detail = report
+        .map((r) => `${r.path}: kept ${r.kept}, dropped ${r.dropped}`)
+        .join("; ");
+      const confirm = await vscode.window.showWarningMessage(
+        `${path.basename(uri.fsPath)} — drop ${dropped} empty required_* slot(s) and renumber the rest contiguously? (${detail})`,
+        { modal: true },
+        "Organize",
+      );
+      if (confirm !== "Organize") return;
+      writeRgdFile(uri.fsPath, rgd.gameData, dict, rgd.header.version);
+      invalidateParsedRgdCache(uri.fsPath);
+      vscode.window.showInformationMessage(
+        `${path.basename(uri.fsPath)}: dropped ${dropped} empty requirement slot(s)`,
+      );
+    } catch (error) {
+      vscode.window.showErrorMessage(
+        `Failed to organize requirements: ${getErrorMessage(error)}`,
       );
     }
   }

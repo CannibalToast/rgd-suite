@@ -64,6 +64,10 @@ export function activate(context: vscode.ExtensionContext) {
       commands.convertToBinary.bind(commands),
     ),
     vscode.commands.registerCommand(
+      "rgdEditor.organizeRequirements",
+      commands.organizeRequirements.bind(commands),
+    ),
+    vscode.commands.registerCommand(
       "rgdEditor.showInfo",
       commands.showInfo.bind(commands),
     ),
