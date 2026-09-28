@@ -2,26 +2,64 @@ name: Release
 
 on:
   push:
+    branches:
+      - master
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       draft:
-        description: 'Create as draft release'
+        description: "Create as draft release"
         type: boolean
         default: false
 
+concurrency:
+  group: release
+
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      release: ${{ steps.tag.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          release=true
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag="$REF_NAME"
+          else
+            tag="v$version"
+            if [ "$EVENT" = "push" ] && git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+              echo "Tag $tag already exists; skipping release"
+              release=false
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
   release:
+    needs: check
+    if: needs.check.outputs.release == 'true'
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
           cache: npm
 
       - name: Install dependencies
@@ -50,7 +88,7 @@ jobs:
         if: github.ref_type == 'tag'
         shell: bash
         run: |
-          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${TAG#v}"
           if [ "${{ steps.pkg.outputs.version }}" != "$tag_version" ]; then
             echo "Tag version $tag_version does not match package.json version ${{ steps.pkg.outputs.version }}"
             exit 1
@@ -60,6 +98,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: rgd-suite-${{ steps.pkg.outputs.version }}.vsix
+          tag_name: ${{ needs.check.outputs.tag }}
           draft: ${{ inputs.draft || false }}
           fail_on_unmatched_files: true
           generate_release_notes: true
