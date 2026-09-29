@@ -127,6 +127,16 @@ Pass `--global` to cover every repo on the machine. Works anywhere `git`
 produces the diff (terminal, difftool, git-shelling GUIs); editor panels and
 GitHub's web view render their own diffs and stay binary.
 
+For compact key-level output instead of text hunks, swap the driver for the
+external diff command:
+
+```sh
+git config diff.rgd.command 'node "<repo>/cli/rgd-cli.js" git-diff'
+```
+
+`git diff` then prints `[CHANGED] key.path: old -> new` lines — what changed
+rather than a full-file dump.
+
 ## Requirements organizer
 
 `Organize Requirements` (editor toolbar) removes extra `required_none` slots and

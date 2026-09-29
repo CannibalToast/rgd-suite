@@ -446,6 +446,70 @@ async function validateTarget(target, dict, attribBase, format) {
     if (!payload.ok) process.exitCode = 1;
 }
 
+// ── Table diff helpers ───────────────────────────────────────────────────
+
+function flattenRgdTable(table, prefix, out) {
+    out = out || new Map();
+    for (const entry of table.entries) {
+        const k = entry.name || ('#' + entry.hash.toString(16).padStart(8, '0'));
+        const full = prefix ? prefix + '.' + k : k;
+        if (entry.type === RgdDataType.Table || entry.type === RgdDataType.TableInt) {
+            if (entry.value) flattenRgdTable(entry.value, full, out);
+        } else if (entry.type === RgdDataType.Float) {
+            out.set(full, { type: 'float', value: entry.value });
+        } else if (entry.type === RgdDataType.Integer) {
+            out.set(full, { type: 'int', value: entry.value });
+        } else if (entry.type === RgdDataType.Bool) {
+            out.set(full, { type: 'bool', value: entry.value });
+        } else if (entry.type === RgdDataType.String || entry.type === RgdDataType.WString) {
+            if (k !== '$REF') out.set(full, { type: 'string', value: entry.value });
+        }
+    }
+    return out;
+}
+
+function compareRgdTables(baseRgd, curRgd) {
+    const FLOAT_EPS = 1e-4;
+    const eq = (a, b) => ((a.type === 'float' || a.type === 'int') && (b.type === 'float' || b.type === 'int'))
+        ? Math.abs(a.value - b.value) <= FLOAT_EPS
+        : a.type === b.type && a.value === b.value;
+    const baseMap = flattenRgdTable(baseRgd.gameData);
+    const curMap = flattenRgdTable(curRgd.gameData);
+    const entries = [];
+    for (const [key, cur] of curMap) {
+        const old = baseMap.get(key);
+        if (!old) entries.push({ kind: 'added', key, newValue: cur });
+        else if (!eq(old, cur)) entries.push({ kind: 'changed', key, oldValue: old, newValue: cur });
+    }
+    for (const [key, old] of baseMap) {
+        if (!curMap.has(key)) entries.push({ kind: 'removed', key, oldValue: old });
+    }
+    entries.sort((a, b) => a.key.localeCompare(b.key));
+    return { entries, totalKeys: curMap.size };
+}
+
+function printTableDiff(title, entries) {
+    const changed = entries.filter(e => e.kind === 'changed').length;
+    const added = entries.filter(e => e.kind === 'added').length;
+    const removed = entries.filter(e => e.kind === 'removed').length;
+    console.log(title);
+    console.log(`  ${changed} changed, ${added} added, ${removed} removed`);
+    for (const e of entries) {
+        if (e.kind === 'changed') {
+            console.log(`[CHANGED] ${e.key}: ${JSON.stringify(e.oldValue.value)} -> ${JSON.stringify(e.newValue.value)}`);
+        } else if (e.kind === 'added') {
+            console.log(`[ADDED]   ${e.key}: ${JSON.stringify(e.newValue.value)}`);
+        } else {
+            console.log(`[REMOVED] ${e.key}: ${JSON.stringify(e.oldValue.value)}`);
+        }
+    }
+}
+
+function parseRgdOrEmpty(file, dict) {
+    try { return parseRgd(fs.readFileSync(file), dict); }
+    catch { return { gameData: { entries: [] } }; }
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────
 
 const COMMANDS = {
@@ -668,9 +732,8 @@ const COMMANDS = {
 
     async 'table-diff'(argv) {
         const flags = VALUE_FLAGS.concat(['--ref']);
-        const [input] = positionals(argv, flags);
-        if (!input) usage('table-diff <input.rgd> [--ref HEAD] [--format json|text]');
-        const ref = getOpt(argv, ['--ref'], 'HEAD');
+        const [input, other] = positionals(argv, flags);
+        if (!input) usage('table-diff <input.rgd> [base.rgd] [--ref HEAD] [--format json|text]');
         const format = getOpt(argv, ['--format'], 'text');
         const dict = getDict(argv);
         const abs = path.resolve(input);
@@ -678,78 +741,53 @@ const COMMANDS = {
             console.error('File not found:', abs);
             process.exit(1);
         }
-        let baseBuf;
-        try {
-            const { execFileSync } = require('child_process');
-            const root = execFileSync('git', ['-C', path.dirname(abs), 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
-            const rel = path.relative(root, abs).replace(/\\/g, '/');
-            baseBuf = execFileSync('git', ['-C', root, 'show', `${ref}:${rel}`], { maxBuffer: 32 * 1024 * 1024 });
-        } catch (e) {
-            const msg = e && e.message ? e.message.split('\n')[0] : String(e);
-            console.error('git show failed:', msg);
-            process.exit(1);
-        }
-        const baseRgd = parseRgd(baseBuf, dict);
         const curRgd = parseRgd(fs.readFileSync(abs), dict);
-
-        function flatten(table, prefix, out) {
-            out = out || new Map();
-            for (const entry of table.entries) {
-                const k = entry.name || ('#' + entry.hash.toString(16).padStart(8, '0'));
-                const full = prefix ? prefix + '.' + k : k;
-                if (entry.type === RgdDataType.Table || entry.type === RgdDataType.TableInt) {
-                    if (entry.value) flatten(entry.value, full, out);
-                } else if (entry.type === RgdDataType.Float) {
-                    out.set(full, { type: 'float', value: entry.value });
-                } else if (entry.type === RgdDataType.Integer) {
-                    out.set(full, { type: 'int', value: entry.value });
-                } else if (entry.type === RgdDataType.Bool) {
-                    out.set(full, { type: 'bool', value: entry.value });
-                } else if (entry.type === RgdDataType.String || entry.type === RgdDataType.WString) {
-                    if (k !== '$REF') out.set(full, { type: 'string', value: entry.value });
-                }
+        let baseRgd, baseLabel;
+        if (other) {
+            const otherAbs = path.resolve(other);
+            if (!fs.existsSync(otherAbs)) {
+                console.error('File not found:', otherAbs);
+                process.exit(1);
             }
-            return out;
-        }
-        const FLOAT_EPS = 1e-4;
-        function eq(a, b) {
-            if ((a.type === 'float' || a.type === 'int') && (b.type === 'float' || b.type === 'int')) {
-                return Math.abs(a.value - b.value) <= FLOAT_EPS;
-            }
-            return a.type === b.type && a.value === b.value;
-        }
-        const baseMap = flatten(baseRgd.gameData);
-        const curMap = flatten(curRgd.gameData);
-        const entries = [];
-        for (const [key, cur] of curMap) {
-            const old = baseMap.get(key);
-            if (!old) entries.push({ kind: 'added', key, newValue: cur });
-            else if (!eq(old, cur)) entries.push({ kind: 'changed', key, oldValue: old, newValue: cur });
-        }
-        for (const [key, old] of baseMap) {
-            if (!curMap.has(key)) entries.push({ kind: 'removed', key, oldValue: old });
-        }
-        entries.sort((a, b) => a.key.localeCompare(b.key));
-        const result = { file: abs, baseRef: ref, totalKeys: curMap.size, changes: entries.length, entries };
-        if (format === 'json') {
-            console.log(JSON.stringify(result, null, 2));
+            baseRgd = parseRgd(fs.readFileSync(otherAbs), dict);
+            baseLabel = otherAbs;
         } else {
-            const changed = entries.filter(e => e.kind === 'changed').length;
-            const added = entries.filter(e => e.kind === 'added').length;
-            const removed = entries.filter(e => e.kind === 'removed').length;
-            console.log(`RGD table diff: ${abs} vs ${ref}`);
-            console.log(`  ${changed} changed, ${added} added, ${removed} removed`);
-            for (const e of entries) {
-                if (e.kind === 'changed') {
-                    console.log(`[CHANGED] ${e.key}: ${JSON.stringify(e.oldValue.value)} -> ${JSON.stringify(e.newValue.value)}`);
-                } else if (e.kind === 'added') {
-                    console.log(`[ADDED]   ${e.key}: ${JSON.stringify(e.newValue.value)}`);
-                } else {
-                    console.log(`[REMOVED] ${e.key}: ${JSON.stringify(e.oldValue.value)}`);
-                }
+            const ref = getOpt(argv, ['--ref'], 'HEAD');
+            let baseBuf;
+            try {
+                const { execFileSync } = require('child_process');
+                const root = execFileSync('git', ['-C', path.dirname(abs), 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+                const rel = path.relative(root, abs).replace(/\\/g, '/');
+                baseBuf = execFileSync('git', ['-C', root, 'show', `${ref}:${rel}`], { maxBuffer: 32 * 1024 * 1024 });
+            } catch (e) {
+                const msg = e && e.message ? e.message.split('\n')[0] : String(e);
+                console.error('git show failed:', msg);
+                process.exit(1);
             }
+            baseRgd = parseRgd(baseBuf, dict);
+            baseLabel = ref;
+        }
+        const { entries, totalKeys } = compareRgdTables(baseRgd, curRgd);
+        if (format === 'json') {
+            console.log(JSON.stringify({ file: abs, baseRef: baseLabel, totalKeys, changes: entries.length, entries }, null, 2));
+        } else {
+            printTableDiff(`RGD table diff: ${abs} vs ${baseLabel}`, entries);
         }
         if (entries.length) process.exitCode = 1;
+    },
+
+    // Invoked by git as the external diff command for the `rgd` driver:
+    //   git config diff.rgd.command 'node <repo>/cli/rgd-cli.js git-diff'
+    // git appends: <path> <old-file> <old-hex> <old-mode> <new-file> <new-hex> <new-mode>
+    async 'git-diff'(argv) {
+        const [file, oldFile, , , newFile] = positionals(argv, []);
+        if (!file || !oldFile || !newFile) usage('git-diff <path> <old-file> <old-hex> <old-mode> <new-file> <new-hex> <new-mode>');
+        const dict = getDict(argv);
+        const baseRgd = parseRgdOrEmpty(oldFile, dict);
+        const curRgd = parseRgdOrEmpty(newFile, dict);
+        const { entries } = compareRgdTables(baseRgd, curRgd);
+        if (entries.length) printTableDiff(`RGD table diff: ${file}`, entries);
+        // Must exit 0 — git treats any nonzero status as "external diff died".
     },
 
     async 'compact-requirements'(argv) {
@@ -799,7 +837,8 @@ Commands:
   parity <input.rgd|input.lua>     Compare an RGD against its Lua source
   parity-batch <folder>            Compare all RGD/Lua pairs in a folder
   validate <file|folder>           Validate encoding, paths and references
-  table-diff <input.rgd>           Diff working RGD against a git revision
+  table-diff <input.rgd>           Diff working RGD vs a git ref, or another .rgd file
+  git-diff <7 git args>            External diff driver — emits key-level diff (diff.rgd.command)
   compact-requirements <input.rgd> Drop required_none slots and renumber
                                    required_* children contiguously
                                    [-o output.rgd] [--dry-run]
