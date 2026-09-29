@@ -15,7 +15,7 @@ GameData {
       probability_of_applying: float = 1.0
       shield_of_faith: bool = false
       target_type_name: string = ""
-      value: float = 750.0
+      value: float = 1000.0
 
       application_type : "type_modifierapplicationtype\\tp_mod_apply_to_entity.lua" {
       }
