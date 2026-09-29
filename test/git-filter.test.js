@@ -24,4 +24,14 @@ const conflicted = Buffer.from(text.toString().replace(/^(\s*time_seconds.*)$/m,
 assert.ok(smudge(conflicted).equals(conflicted), 'smudge leaves conflict markers for the user');
 assert.throws(() => clean(conflicted), 'clean refuses unresolved conflicts');
 
+// A float the text format can't reproduce (negative NaN) must be stored as binary, never altered.
+const at = bin.indexOf(Buffer.from([0x00, 0x00, 0x7a, 0x44])); // 1000.0f, the health modifier value
+assert.ok(at > 0, 'fixture contains 1000.0f');
+const negNaN = Buffer.from(bin);
+negNaN.writeUInt32LE(0xffc00000, at);
+assert.ok(clean(negNaN).equals(negNaN), 'clean falls back to binary when text would be lossy');
+const corrupt = bin.subarray(0, 200);
+assert.ok(clean(corrupt).equals(corrupt), 'clean stores unparseable RGDs unchanged');
+assert.ok(smudge(corrupt).equals(corrupt), 'and smudge hands them back unchanged');
+
 console.log('git-filter tests complete');

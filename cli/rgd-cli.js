@@ -519,6 +519,13 @@ function parseRgdAny(buf, dict) {
     return parseRgd(buildRgd(gameData, dict, version), dict);
 }
 
+function textRoundTrips(buf, dict) {
+    try {
+        const { gameData, version } = textToRgd(rgdToText(parseRgd(buf, dict), '-', null), dict);
+        return buildRgd(gameData, dict, version).equals(buf);
+    } catch { return false; }
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────
 
 const COMMANDS = {
@@ -526,7 +533,11 @@ const COMMANDS = {
         const [input] = positionals(argv, VALUE_FLAGS);
         if (!input) usage('to-text <input.rgd> [-o output.txt]');
         const dict = getDict(argv);
-        const rgd = parseRgdAny(fs.readFileSync(input === '-' ? 0 : input), dict);
+        const buf = fs.readFileSync(input === '-' ? 0 : input);
+        // git clean filter: store the binary as-is unless its text rebuilds these exact bytes
+        // (a negative NaN prints as plain NaN; corrupt files don't parse) — checkout must never alter a file.
+        if (input === '-' && isRgdBinary(buf) && !textRoundTrips(buf, dict)) return void process.stdout.write(buf);
+        const rgd = parseRgdAny(buf, dict);
         const text = rgdToText(rgd, path.basename(input), null);
         const out = getOpt(argv, ['-o', '--output'], input + '.txt');
         if (out === '-') process.stdout.write(text);
