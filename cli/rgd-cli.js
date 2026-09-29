@@ -456,7 +456,8 @@ const COMMANDS = {
         const rgd = readRgdFile(input, dict);
         const text = rgdToText(rgd, path.basename(input), null);
         const out = getOpt(argv, ['-o', '--output'], input + '.txt');
-        await fs.promises.writeFile(out, text, 'utf8');
+        if (out === '-') process.stdout.write(text);
+        else await fs.promises.writeFile(out, text, 'utf8');
     },
 
     async 'from-text'(argv) {
@@ -485,7 +486,8 @@ const COMMANDS = {
         const parentLoader = makeParentLoader(attribBase, dict);
         const lua = await rgdToLuaDifferential(rgd, parentLoader);
         const out = getOpt(argv, ['-o', '--output'], defaultOutput(input, '.rgd', '.lua'));
-        await fs.promises.writeFile(out, lua, 'utf8');
+        if (out === '-') process.stdout.write(lua);
+        else await fs.promises.writeFile(out, lua, 'utf8');
     },
 
     async 'from-lua'(argv) {

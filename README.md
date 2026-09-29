@@ -112,6 +112,21 @@ level — not a binary hex dump or lua table dump:
 
 Rows are colored added / removed / changed; click a list entry to jump to various keys
 
+## Readable `.rgd` diffs without the extension
+
+`.gitattributes` maps `*.rgd` to an `rgd` textconv driver, so `git diff`,
+`git log -p`, `git show` and `git log -S` can render binaries as text. The
+driver command is per-clone git config, so each machine opts in once:
+
+```sh
+cli/setup-git-diff.sh           # Linux/macOS/git-bash — this clone
+cli/setup-git-diff.cmd          # Windows — double-click, or same invocation
+```
+
+Pass `--global` to cover every repo on the machine. Works anywhere `git`
+produces the diff (terminal, difftool, git-shelling GUIs); editor panels and
+GitHub's web view render their own diffs and stay binary.
+
 ## Requirements organizer
 
 `Organize Requirements` (editor toolbar) removes extra `required_none` slots and
