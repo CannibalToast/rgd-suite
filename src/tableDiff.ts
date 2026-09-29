@@ -297,13 +297,14 @@ async function gitShow(filePath: string, ref: string): Promise<Buffer> {
   try {
     const { stdout } = await execFileAsync(
       "git",
-      ["-C", root, "show", `${ref}:${rel}`],
+      // --filters runs the rgd smudge filter, so text-stored blobs come back as binary.
+      ["-C", root, "cat-file", "--filters", `${ref}:${rel}`],
       { encoding: "buffer", maxBuffer: 32 * 1024 * 1024 },
     );
     return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (/exists on disk, but not in|does not exist|pathspec|bad object/i.test(msg)) {
+    if (/exists on disk, but not in|does not exist|pathspec|bad object|not a valid object/i.test(msg)) {
       throw new Error(
         `No version of this file at ${ref} (new/untracked or bad ref).`,
       );

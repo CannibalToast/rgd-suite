@@ -114,18 +114,30 @@ Rows are colored added / removed / changed; click a list entry to jump to variou
 
 ## Readable `.rgd` diffs without the extension
 
-`.gitattributes` maps `*.rgd` to an `rgd` textconv driver, so `git diff`,
-`git log -p`, `git show` and `git log -S` can render binaries as text. The
-driver command is per-clone git config, so each machine opts in once:
+`.gitattributes` gives `*.rgd` an `rgd` clean/smudge filter: git stores each
+`.rgd` as its `to-text` dump, and checkout writes the binary back to disk
+(byte-identical). One file per asset, binary in the working tree, text in
+history — so every client that reads git history (GitHub web and PRs,
+GitHub Desktop, editor history views, `git diff`/`log -p`) shows plain text
+diffs, and edits to different keys merge automatically.
+
+The filter commands are per-clone git config, so **run the setup once per
+clone before checking out or adding `.rgd` files** — without it, checkout
+writes the text dump to disk instead of the binary:
 
 ```sh
 cli/setup-git-diff.sh           # Linux/macOS/git-bash — this clone
 cli/setup-git-diff.cmd          # Windows — double-click, or same invocation
 ```
 
-Pass `--global` to cover every repo on the machine. Works anywhere `git`
-produces the diff (terminal, difftool, git-shelling GUIs); editor panels and
-GitHub's web view render their own diffs and stay binary.
+Pass `--global` to cover every repo on the machine. GitHub's "Download ZIP"
+and release archives skip filters and contain text; build releases from a
+checkout.
+
+On a merge conflict, `hq.rgd` is left on disk as text with conflict markers.
+Edit the markers out and `git add` it (adding with markers still present
+fails). After committing, restore the binary with
+`rm hq.rgd && git checkout -- hq.rgd`.
 
 For compact key-level output instead of text hunks, swap the driver for the
 external diff command:

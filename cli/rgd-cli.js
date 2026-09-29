@@ -15,7 +15,7 @@ const dist = path.join(__dirname, '..', 'bundled', 'rgd-tools', 'dist');
 
 const { createAndLoadDictionaries } = require(path.join(dist, 'dictionary.js'));
 const { readRgdFile, parseRgd } = require(path.join(dist, 'reader.js'));
-const { writeRgdFile } = require(path.join(dist, 'writer.js'));
+const { writeRgdFile, buildRgd } = require(path.join(dist, 'writer.js'));
 const { rgdToText, textToRgd } = require(path.join(dist, 'textFormat.js'));
 const { rgdToLua, rgdToLuaDifferential, luaToRgdResolved, parseLuaToTable } = require(path.join(dist, 'luaFormat.js'));
 const { hash, hashToHex } = require(path.join(dist, 'hash.js'));
@@ -506,8 +506,17 @@ function printTableDiff(title, entries) {
 }
 
 function parseRgdOrEmpty(file, dict) {
-    try { return parseRgd(fs.readFileSync(file), dict); }
+    try { return parseRgdAny(fs.readFileSync(file), dict); }
     catch { return { gameData: { entries: [] } }; }
+}
+
+const isRgdBinary = buf => buf.subarray(0, 12).toString('latin1') === 'Relic Chunky';
+
+// Binary RGD, or its text dump — git blobs are text once the rgd clean filter is active.
+function parseRgdAny(buf, dict) {
+    if (isRgdBinary(buf)) return parseRgd(buf, dict);
+    const { gameData, version } = textToRgd(stripUtf8Bom(buf.toString('utf8')), dict);
+    return parseRgd(buildRgd(gameData, dict, version), dict);
 }
 
 // ── Commands ─────────────────────────────────────────────────────────────
@@ -517,7 +526,7 @@ const COMMANDS = {
         const [input] = positionals(argv, VALUE_FLAGS);
         if (!input) usage('to-text <input.rgd> [-o output.txt]');
         const dict = getDict(argv);
-        const rgd = readRgdFile(input, dict);
+        const rgd = parseRgdAny(fs.readFileSync(input === '-' ? 0 : input), dict);
         const text = rgdToText(rgd, path.basename(input), null);
         const out = getOpt(argv, ['-o', '--output'], input + '.txt');
         if (out === '-') process.stdout.write(text);
@@ -528,7 +537,12 @@ const COMMANDS = {
         const [input] = positionals(argv, VALUE_FLAGS);
         if (!input) usage('from-text <input.rgd.txt> [-o output.rgd] [--version 1|3]');
         const dict = getDict(argv);
-        const text = maybeStripBom(input, await fs.promises.readFile(input), []).toString('utf8');
+        const raw = input === '-' ? fs.readFileSync(0) : null;
+        // git smudge: pass through pre-filter binary blobs, and merge conflicts so the user can resolve them.
+        if (raw && (isRgdBinary(raw) || /^<<<<<<< /m.test(raw.toString('utf8')))) return void process.stdout.write(raw);
+        const text = raw
+            ? stripUtf8Bom(raw.toString('utf8'))
+            : maybeStripBom(input, await fs.promises.readFile(input), []).toString('utf8');
         const { gameData, version } = textToRgd(text, dict);
         // Special-case: foo.rgd.txt -> foo.rgd, otherwise strip .txt or append .rgd
         let defaultOut = input;
@@ -538,7 +552,8 @@ const COMMANDS = {
         const out = getOpt(argv, ['-o', '--output'], defaultOut);
         const versionStr = getOpt(argv, ['--version']);
         const finalVersion = versionStr ? parseInt(versionStr, 10) : version;
-        writeRgdFile(out, gameData, dict, finalVersion);
+        if (out === '-') process.stdout.write(buildRgd(gameData, dict, finalVersion));
+        else writeRgdFile(out, gameData, dict, finalVersion);
     },
 
     async 'to-lua'(argv) {
@@ -741,7 +756,7 @@ const COMMANDS = {
             console.error('File not found:', abs);
             process.exit(1);
         }
-        const curRgd = parseRgd(fs.readFileSync(abs), dict);
+        const curRgd = parseRgdAny(fs.readFileSync(abs), dict);
         let baseRgd, baseLabel;
         if (other) {
             const otherAbs = path.resolve(other);
@@ -749,7 +764,7 @@ const COMMANDS = {
                 console.error('File not found:', otherAbs);
                 process.exit(1);
             }
-            baseRgd = parseRgd(fs.readFileSync(otherAbs), dict);
+            baseRgd = parseRgdAny(fs.readFileSync(otherAbs), dict);
             baseLabel = otherAbs;
         } else {
             const ref = getOpt(argv, ['--ref'], 'HEAD');
@@ -764,7 +779,7 @@ const COMMANDS = {
                 console.error('git show failed:', msg);
                 process.exit(1);
             }
-            baseRgd = parseRgd(baseBuf, dict);
+            baseRgd = parseRgdAny(baseBuf, dict);
             baseLabel = ref;
         }
         const { entries, totalKeys } = compareRgdTables(baseRgd, curRgd);
