@@ -15,6 +15,12 @@ import { HashDictionary } from "../bundled/rgd-tools/dist/dictionary";
 import { safeJoin } from "./pathUtils";
 import { isNilReference, stripUtf8BomFromFile } from "./validators";
 
+const walkFiles: (
+  folder: string,
+  extensions: readonly string[],
+  options?: { grouped?: boolean; yieldEvery?: number },
+) => Promise<string[]> = require("../cli/fileWalk.js").walkFiles;
+
 // Memoize attrib-root discovery by normalized file path. Attrib roots rarely
 // change during a session and the lookup is called per file open / per tree
 // node, so caching is a clean win (Tier 2 #12).
@@ -191,67 +197,20 @@ const COLLECT_YIELD_EVERY_DIRS = 32;
 
 export async function collectFilesAsync(
   folder: string,
-  ext: string,
+  ext: string | readonly string[],
 ): Promise<string[]> {
-  const results: string[] = [];
-  const stack: string[] = [folder];
-  let dirsVisited = 0;
-  while (stack.length) {
-    const dir = stack.pop()!;
-    dirsVisited++;
-    if (dirsVisited % COLLECT_YIELD_EVERY_DIRS === 0) {
-      await new Promise<void>((r) => setImmediate(r));
-    }
-    let entries: fs.Dirent[];
-    try {
-      entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) stack.push(full);
-      else if (e.isFile() && e.name.toLowerCase().endsWith(ext))
-        results.push(full);
-    }
-  }
-  return results;
+  const exts: string[] = Array.isArray(ext) ? [...ext] : [ext as string];
+  return await walkFiles(folder, exts, {
+    grouped: Array.isArray(ext),
+    yieldEvery: COLLECT_YIELD_EVERY_DIRS,
+  });
 }
 
 /** One directory walk collecting .lua, .rgd, and .rgd.txt files. */
 export async function collectValidateFilesAsync(
   folder: string,
 ): Promise<string[]> {
-  const results: string[] = [];
-  const stack: string[] = [folder];
-  let dirsVisited = 0;
-  while (stack.length) {
-    const dir = stack.pop()!;
-    dirsVisited++;
-    if (dirsVisited % COLLECT_YIELD_EVERY_DIRS === 0) {
-      await new Promise<void>((r) => setImmediate(r));
-    }
-    let entries: fs.Dirent[];
-    try {
-      entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        stack.push(full);
-      } else if (e.isFile()) {
-        const lower = e.name.toLowerCase();
-        if (
-          lower.endsWith(".lua") ||
-          lower.endsWith(".rgd") ||
-          lower.endsWith(".rgd.txt")
-        ) {
-          results.push(full);
-        }
-      }
-    }
-  }
-  return results;
+  return await walkFiles(folder, [".lua", ".rgd", ".rgd.txt"], {
+    yieldEvery: COLLECT_YIELD_EVERY_DIRS,
+  });
 }

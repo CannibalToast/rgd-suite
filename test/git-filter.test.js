@@ -34,4 +34,18 @@ const corrupt = bin.subarray(0, 200);
 assert.ok(clean(corrupt).equals(corrupt), 'clean stores unparseable RGDs unchanged');
 assert.ok(smudge(corrupt).equals(corrupt), 'and smudge hands them back unchanged');
 
+// git-setup must restore .rgd files a pre-setup checkout left as text (git reports them clean).
+const os = require('os');
+const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rgd-setup-'));
+const git = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+git('init', '-q');
+fs.writeFileSync(path.join(repo, '.gitattributes'), '*.rgd -text filter=rgd\n');
+fs.writeFileSync(path.join(repo, 'hq.rgd'), text);
+git('add', '.');
+git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'text on disk, no filter yet');
+execFileSync('node', [CLI, 'git-setup'], { cwd: repo, stdio: 'pipe' });
+assert.ok(fs.readFileSync(path.join(repo, 'hq.rgd')).equals(bin), 'git-setup restores stale text checkouts to binary');
+assert.strictEqual(git('status', '--porcelain').toString(), '', 'and the tree stays clean');
+fs.rmSync(repo, { recursive: true, force: true });
+
 console.log('git-filter tests complete');

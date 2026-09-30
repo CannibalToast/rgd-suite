@@ -17,85 +17,14 @@ const { RgdDataType } = require(path.join(DIST, 'types'));
 // Re-implement pure helpers here that mirror tableDiff.ts so we exercise the same algorithms
 // the extension will use. Also smoke-test parse+flatten by writing two files and comparing via
 // dynamic require of the built out if present — primary coverage is algorithm correctness.
-
-function flattenLike(table, prefix, result) {
-    const out = result || new Map();
-    for (const entry of table.entries) {
-        const k = entry.name || ('#' + entry.hash.toString(16).padStart(8, '0'));
-        const full = prefix ? prefix + '.' + k : k;
-        if (entry.type === RgdDataType.Table || entry.type === RgdDataType.TableInt) {
-            if (entry.value) flattenLike(entry.value, full, out);
-        } else if (entry.type === RgdDataType.Float) {
-            out.set(full, { type: 'float', value: entry.value });
-        } else if (entry.type === RgdDataType.Integer) {
-            out.set(full, { type: 'int', value: entry.value });
-        } else if (entry.type === RgdDataType.Bool) {
-            out.set(full, { type: 'bool', value: entry.value });
-        } else if (entry.type === RgdDataType.String || entry.type === RgdDataType.WString) {
-            if (k === '$REF') continue;
-            out.set(full, { type: 'string', value: entry.value });
-        }
-    }
-    return out;
-}
-
-function valuesEqual(a, b) {
-    const numeric = (t) => t === 'float' || t === 'int';
-    if (numeric(a.type) && numeric(b.type)) {
-        return Math.abs(a.value - b.value) <= 1e-4;
-    }
-    if (a.type !== b.type) return false;
-    return a.value === b.value;
-}
-
-function diffStringParts(oldStr, newStr) {
-    const min = Math.min(oldStr.length, newStr.length);
-    let p = 0;
-    while (p < min && oldStr[p] === newStr[p]) p++;
-    let s = 0;
-    while (s < min - p && oldStr[oldStr.length - 1 - s] === newStr[newStr.length - 1 - s]) s++;
-    return {
-        prefix: oldStr.slice(0, p),
-        oldMid: oldStr.slice(p, oldStr.length - s),
-        newMid: newStr.slice(p, newStr.length - s),
-        suffix: oldStr.slice(oldStr.length - s),
-    };
-}
-
-function diffFlatMaps(base, current) {
-    const entries = [];
-    for (const [key, cur] of current) {
-        if (key.endsWith('.$ref') || key.endsWith('.$REF')) continue;
-        const old = base.get(key);
-        if (!old) entries.push({ kind: 'added', key, newValue: cur });
-        else if (!valuesEqual(old, cur)) {
-            const entry = { kind: 'changed', key, oldValue: old, newValue: cur };
-            if (old.type === 'string' && cur.type === 'string') {
-                entry.stringDiff = diffStringParts(old.value, cur.value);
-            }
-            entries.push(entry);
-        }
-    }
-    for (const [key, old] of base) {
-        if (key.endsWith('.$ref') || key.endsWith('.$REF')) continue;
-        if (!current.has(key)) entries.push({ kind: 'removed', key, oldValue: old });
-    }
-    entries.sort((a, b) => a.key.localeCompare(b.key));
-    return entries;
-}
-
-function buildDiffHighlightMap(entries) {
-    const map = {};
-    for (const e of entries) {
-        map[e.key] = e.kind;
-        const parts = e.key.split('.');
-        for (let i = 1; i < parts.length; i++) {
-            const anc = parts.slice(0, i).join('.');
-            if (!map[anc]) map[anc] = 'changed';
-        }
-    }
-    return map;
-}
+const { loadTs } = require('./load-ts');
+const {
+    diffFlatMaps,
+    diffStringParts,
+    buildDiffHighlightMap,
+    flattenRgd,
+    flattenRgdBuffer,
+} = loadTs('src/tableDiff.ts');
 
 function test(name, fn) {
     try {
@@ -195,6 +124,50 @@ test('highlight map marks ancestors of leaf changes', () => {
     assert.strictEqual(map['GameData.extra'], 'added');
 });
 
+test('flattenRgd flattens nested tables, hash/empty-name keys, and skips $REF/NoData', () => {
+    const table = {
+        entries: [
+            {
+                name: 'outer', hash: 1, type: RgdDataType.Table,
+                value: {
+                    entries: [
+                        { name: 'leaf', hash: 2, type: RgdDataType.Integer, value: 5 },
+                        { name: '', hash: 9, type: RgdDataType.Float, value: 2.5 },
+                    ],
+                },
+            },
+            { hash: 4, type: RgdDataType.Bool, value: true },
+            { name: '$REF', hash: 5, type: RgdDataType.String, value: 'parent.lua' },
+            { name: 'deleted', hash: 6, type: RgdDataType.NoData, value: null },
+            { name: 'emptyTable', hash: 7, type: RgdDataType.TableInt, value: { entries: [] } },
+        ],
+    };
+    const flat = flattenRgd(table);
+    assert.deepStrictEqual(flat.get('outer.leaf'), { type: 'int', value: 5 });
+    assert.deepStrictEqual(flat.get('outer.'), { type: 'float', value: 2.5 });
+    assert.deepStrictEqual(flat.get('#00000004'), { type: 'bool', value: true });
+    assert.ok(!flat.has('$REF'), '$REF entries must be skipped');
+    assert.ok(!flat.has('deleted'), 'NoData entries must be skipped');
+    assert.ok(!flat.has('emptyTable'), 'null nested tables must not produce keys');
+    assert.strictEqual(flat.size, 3);
+});
+
+test('flattenRgdBuffer parses and flattens a binary buffer', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rgd-flatbuf-'));
+    try {
+        const t = createTable();
+        t.entries.push(createEntry('hitpoints', RgdDataType.Float, 42, dict));
+        const outer = createTable();
+        outer.entries.push(createEntry('GameData', RgdDataType.Table, t, dict));
+        const p = path.join(tmp, 'unit.rgd');
+        writeRgdFile(p, outer, dict, 1);
+        const flat = flattenRgdBuffer(fs.readFileSync(p), dict);
+        assert.deepStrictEqual(flat.get('GameData.hitpoints'), { type: 'float', value: 42 });
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
 test('flatten real RGD files and detect value change', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rgd-diff-'));
     try {
@@ -217,8 +190,8 @@ test('flatten real RGD files and detect value change', () => {
         writeRgdFile(p2, outer2, dict, 1);
 
         const { parseRgd } = require(path.join(DIST, 'reader'));
-        const m1 = flattenLike(parseRgd(fs.readFileSync(p1), dict).gameData);
-        const m2 = flattenLike(parseRgd(fs.readFileSync(p2), dict).gameData);
+        const m1 = flattenRgd(parseRgd(fs.readFileSync(p1), dict).gameData);
+        const m2 = flattenRgd(parseRgd(fs.readFileSync(p2), dict).gameData);
         const diffs = diffFlatMaps(m1, m2);
         const kinds = Object.fromEntries(diffs.map((d) => [d.key, d.kind]));
         assert.ok(

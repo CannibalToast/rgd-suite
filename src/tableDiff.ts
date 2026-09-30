@@ -52,11 +52,13 @@ export interface TableDiffResult {
 
 type FlatMap = Map<string, FlatScalar>;
 
-function flattenRgd(
+export function flattenRgd(
   table: RgdTable,
   prefix = "",
   result?: FlatMap,
 ): FlatMap {
+  // Pass the target Map by reference so nested tables append directly
+  // instead of allocating-and-copying per level (Tier 3 #18).
   const out = result ?? new Map<string, FlatScalar>();
   for (const entry of table.entries) {
     const k = entry.name ?? `#${entry.hash.toString(16).padStart(8, "0")}`;
@@ -79,6 +81,7 @@ function flattenRgd(
         break;
       case RgdDataType.String:
       case RgdDataType.WString:
+        // Skip $REF entries — these are reference-path metadata, not comparable data values
         if (k === "$REF") break;
         out.set(full, { type: "string", value: entry.value as string });
         break;

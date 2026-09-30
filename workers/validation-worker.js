@@ -12,23 +12,26 @@ const { createAndLoadDictionaries } = require(path.join(dist, 'dictionary.js'));
 const { parseRgd } = require(path.join(dist, 'reader.js'));
 const { rgdToLua, parseLuaToTable } = require(path.join(dist, 'luaFormat.js'));
 const {
-    resolveAttribRefPath,
     stripUtf8Bom,
     stripUtf8BomFromFile,
     validateEncoding,
     validateLuaReferences,
     validateRgdReferences,
 } = require(path.join(__dirname, '..', 'cli', 'validators.js'));
+const { createAttribLoaders } = require(path.join(__dirname, '..', 'cli', 'attribLoaders.js'));
 
 const dict = createAndLoadDictionaries(workerData.dictPaths || []);
 const FILE_CACHE_MAX = 500;
 const luaFileCache = new Map();
-
-function touch(cache, key, value) {
-    if (cache.has(key)) cache.delete(key);
-    else if (cache.size >= FILE_CACHE_MAX) cache.delete(cache.keys().next().value);
-    cache.set(key, value);
-}
+const attribLoaders = createAttribLoaders(
+    {
+        readRgdFile: (file, d) => parseRgd(fs.readFileSync(file), d),
+        rgdToLua,
+        parseLuaToTable,
+    },
+    dict,
+    { cache: luaFileCache, cacheLimit: FILE_CACHE_MAX },
+);
 
 function makeFix(filePath) {
     return {
@@ -40,36 +43,7 @@ function makeFix(filePath) {
 }
 
 function makeLuaFileLoader(attribBase) {
-    return function loader(refPath) {
-        if (!attribBase) return null;
-
-        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
-        if (luaPath) {
-            if (luaFileCache.has(luaPath)) {
-                const cached = luaFileCache.get(luaPath);
-                luaFileCache.delete(luaPath);
-                luaFileCache.set(luaPath, cached);
-                return cached;
-            }
-            if (fs.existsSync(luaPath)) {
-                const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
-                const content = fixed.buffer.toString('utf8');
-                touch(luaFileCache, luaPath, content);
-                return content;
-            }
-        }
-
-        const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
-        if (rgdPath && fs.existsSync(rgdPath)) {
-            const content = rgdToLua(parseRgd(fs.readFileSync(rgdPath), dict));
-            touch(luaFileCache, rgdPath, content);
-            return content;
-        }
-
-        const cacheKey = luaPath || rgdPath;
-        if (cacheKey) touch(luaFileCache, cacheKey, null);
-        return null;
-    };
+    return attribLoaders.makeLuaFileLoader(attribBase);
 }
 
 function validateFile(filePath, attribBase) {

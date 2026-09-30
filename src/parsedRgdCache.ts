@@ -46,12 +46,9 @@ export function configureParsedRgdCacheLimits(vfsSize?: number, treeSize?: numbe
   _cache = newCache;
 }
 
+// LRUCache evicts automatically on set when over capacity.
 function touch(fsPath: string, entry: ParsedRgdEntry): void {
   _cache.set(fsPath, entry);
-}
-
-function evictIfNeeded(): void {
-  // LRUCache evicts automatically on set when over capacity.
 }
 
 function localeEnabled(): boolean {
@@ -75,7 +72,6 @@ export async function getParsedRgd(
   const rgd = parseRgd(buffer, dict);
   const entry: ParsedRgdEntry = { mtimeMs: stat.mtimeMs, rgd };
   touch(fsPath, entry);
-  evictIfNeeded();
   return entry;
 }
 

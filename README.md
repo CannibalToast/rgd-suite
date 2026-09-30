@@ -122,15 +122,18 @@ GitHub Desktop, editor history views, `git diff`/`log -p`) shows plain text
 diffs, and edits to different keys merge automatically.
 
 The filter commands are per-clone git config, so **run the setup once per
-clone before checking out or adding `.rgd` files** — without it, checkout
-writes the text dump to disk instead of the binary:
+clone**. Until then, `.rgd` files check out as text dumps; setup restores them
+to binary:
 
 ```sh
 cli/setup-git-diff.sh           # Linux/macOS/git-bash — this clone
 cli/setup-git-diff.cmd          # Windows — double-click, or same invocation
 ```
 
-Pass `--global` to cover every repo on the machine. GitHub's "Download ZIP"
+For a mod repo, commit `*.rgd -text filter=rgd diff=rgd` to its
+`.gitattributes` and run this script from inside that repo; the filter points
+back at this rgd-suite checkout. Pass `--global` to cover every repo on the
+machine. GitHub's "Download ZIP"
 and release archives skip filters and contain text; build releases from a
 checkout.
 

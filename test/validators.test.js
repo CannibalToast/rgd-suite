@@ -17,7 +17,11 @@ const {
     isNilReference,
     resolveAttribRefPath,
     clearAttribIndex,
+    createValidators,
 } = require('../cli/validators');
+const { loadTs } = require('./load-ts');
+
+const hostValidators = loadTs('src/validators.ts');
 
 function test(name, fn) {
     try {
@@ -541,4 +545,188 @@ test('validateRgdReferences skips internal type_* references in nested binary ta
         'internal type_* table references should not be reported as missing');
     assert(!issues.some((i) => i.kind === 'missing_file'),
         'only real file references should produce missing_file issues');
+});
+
+test('profile issue.path: CLI coerces to empty string, host passes through', () => {
+    const cliIssue = validateFolderStructure(undefined)[0];
+    const hostIssue = hostValidators.validateFolderStructure(undefined)[0];
+    assert.strictEqual(cliIssue.kind, 'folder_structure');
+    assert.strictEqual(cliIssue.path, '');
+    assert.strictEqual(hostIssue.kind, 'folder_structure');
+    assert.strictEqual(hostIssue.path, undefined);
+});
+
+test('profile stripUtf8BomFromFile: fix metadata and buffer defaults differ', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rgd-profile-bom-'));
+    try {
+        const cliFile = path.join(dir, 'cli.lua');
+        const hostFile = path.join(dir, 'host.lua');
+        const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('GameData = Inherit([[]])\n')]);
+        fs.writeFileSync(cliFile, bom);
+        fs.writeFileSync(hostFile, bom);
+
+        const cliRes = stripUtf8BomFromFile(cliFile);
+        assert.strictEqual(cliRes.fixed, true);
+        assert.strictEqual('fix' in cliRes, false, 'CLI strip returns no fix metadata');
+
+        const hostRes = hostValidators.stripUtf8BomFromFile(hostFile);
+        assert.strictEqual(hostRes.fixed, true);
+        assert.deepStrictEqual(hostRes.fix, {
+            kind: 'bom_stripped',
+            severity: 'info',
+            path: hostFile,
+            details: 'Removed UTF-8 BOM',
+        });
+
+        const plain = Buffer.from('GameData = {}\n');
+        const plainFile = path.join(dir, 'plain.lua');
+        fs.writeFileSync(plainFile, plain);
+        assert.strictEqual(stripUtf8BomFromFile(plainFile, plain).buffer, plain);
+        assert.strictEqual(hostValidators.stripUtf8BomFromFile(plainFile, plain).buffer, plain);
+
+        assert.throws(
+            () => hostValidators.stripUtf8BomFromFile(plainFile, null),
+            /Cannot read properties of null/,
+        );
+        const beforeFalse = fs.readFileSync(plainFile);
+        const hostFalse = hostValidators.stripUtf8BomFromFile(plainFile, false);
+        assert.strictEqual(hostFalse.fixed, false);
+        assert.strictEqual(hostFalse.buffer, false);
+        assert(fs.readFileSync(plainFile).equals(beforeFalse), 'false buffer must not modify the file');
+
+        const cliFalsy = stripUtf8BomFromFile(plainFile, null);
+        assert.strictEqual(cliFalsy.fixed, false);
+        assert(cliFalsy.buffer.equals(plain));
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('profile prefix fallback: CLI treats empty prefix as GameData, host keeps it', () => {
+    const attrib = fs.mkdtempSync(path.join(os.tmpdir(), 'rgd-profile-prefix-'));
+    try {
+        const table = { reference: 'missing/root.lua', entries: new Map() };
+        const cliIssue = validateLuaReferences(table, attrib, '')[0];
+        const hostIssue = hostValidators.validateLuaReferences(table, attrib, '')[0];
+        assert.strictEqual(cliIssue.key, 'GameData');
+        assert.strictEqual(hostIssue.key, '');
+    } finally {
+        fs.rmSync(attrib, { recursive: true, force: true });
+    }
+});
+
+test('profile Rgd key fallback: empty names and unknown hashes', () => {
+    const attrib = fs.mkdtempSync(path.join(os.tmpdir(), 'rgd-profile-keys-'));
+    try {
+        const entries = [
+            { name: '', hash: 0x10, type: 3, value: 'gone/file.lua' },
+            { hash: 0x20, type: 3, value: 'gone/other.lua' },
+        ];
+        const cliIssues = validateRgdReferences({ entries }, attrib);
+        assert(cliIssues.some((i) => i.key === 'GameData.#00000010'), 'CLI empty name falls back to hash: ' + JSON.stringify(cliIssues));
+        assert(cliIssues.some((i) => i.key === 'GameData.#00000020'));
+        const hostIssues = hostValidators.validateRgdReferences({ entries }, attrib);
+        assert(hostIssues.some((i) => i.key === 'GameData.'), 'host keeps empty name: ' + JSON.stringify(hostIssues));
+        assert(hostIssues.some((i) => i.key === 'GameData.#00000020'));
+
+        const noKeys = { entries: [{ type: 3, value: 'gone/file.lua' }] };
+        assert.throws(() => hostValidators.validateRgdReferences(noKeys, attrib), TypeError);
+        const cliMissing = validateRgdReferences(noKeys, attrib);
+        assert(cliMissing.some((i) => i.key === 'GameData.<unknown>'));
+    } finally {
+        fs.rmSync(attrib, { recursive: true, force: true });
+    }
+});
+
+test('profile Lua null entries: host throws, CLI skips', () => {
+    const attrib = fs.mkdtempSync(path.join(os.tmpdir(), 'rgd-profile-null-'));
+    try {
+        const table = { entries: new Map([['dead', null]]) };
+        assert.throws(() => hostValidators.validateLuaReferences(table, attrib), TypeError);
+        assert.deepStrictEqual(validateLuaReferences(table, attrib), []);
+    } finally {
+        fs.rmSync(attrib, { recursive: true, force: true });
+    }
+});
+
+test('validateLuaReferences validates each entry before pulling the next', () => {
+    const attrib = fs.mkdtempSync(path.join(os.tmpdir(), 'rgd-stream-'));
+    try {
+        fs.mkdirSync(path.join(attrib, 'x'), { recursive: true });
+        fs.writeFileSync(path.join(attrib, 'x', 'real.lua'), '');
+        clearAttribIndex(attrib);
+        hostValidators.clearAttribIndex(attrib);
+
+        const origExists = fs.existsSync;
+        const calls = [];
+        const makeTable = () => ({
+            entries: (function* () {
+                yield ['ok', { type: 'value', value: 'x/real.lua' }];
+                assert(calls.length > 0, 'first entry must hit the filesystem before the next is pulled');
+                yield ['dead', null];
+            })(),
+        });
+        try {
+            fs.existsSync = (...args) => {
+                calls.push(args[0]);
+                return origExists(...args);
+            };
+            assert.deepStrictEqual(validateLuaReferences(makeTable(), attrib), []);
+            calls.length = 0;
+            assert.throws(() => hostValidators.validateLuaReferences(makeTable(), attrib), TypeError);
+        } finally {
+            fs.existsSync = origExists;
+        }
+    } finally {
+        fs.rmSync(attrib, { recursive: true, force: true });
+    }
+});
+
+test('profile attrib index caches are per-instance', () => {
+    const attrib = fs.mkdtempSync(path.join(os.tmpdir(), 'rgd-profile-state-'));
+    try {
+        fs.mkdirSync(path.join(attrib, 'sub'), { recursive: true });
+        fs.writeFileSync(path.join(attrib, 'sub', 'seed_ref.rgd'), '');
+        const fresh = createValidators(false);
+        const freshOther = createValidators(false);
+
+        assert(resolveAttribRefPath('seed_ref', attrib, '.rgd'));
+        fs.writeFileSync(path.join(attrib, 'sub', 'late_ref.rgd'), '');
+        assert.strictEqual(resolveAttribRefPath('late_ref', attrib, '.rgd'), null);
+
+        freshOther.clearAttribIndex(attrib);
+        assert.strictEqual(resolveAttribRefPath('late_ref', attrib, '.rgd'), null);
+
+        assert(fresh.resolveAttribRefPath('late_ref', attrib, '.rgd'));
+
+        clearAttribIndex(attrib);
+        assert(resolveAttribRefPath('late_ref', attrib, '.rgd'));
+    } finally {
+        fs.rmSync(attrib, { recursive: true, force: true });
+    }
+});
+
+test('profile relocated refs and no-root warnings surface under host', () => {
+    const attrib = fs.mkdtempSync(path.join(os.tmpdir(), 'rgd-profile-reloc-'));
+    try {
+        fs.mkdirSync(path.join(attrib, 'research', 'races', 'correct'), { recursive: true });
+        fs.writeFileSync(path.join(attrib, 'research', 'races', 'correct', 'shared_target.lua'), '');
+        hostValidators.clearAttribIndex(attrib);
+
+        const wrong = 'research\\races\\wrong\\shared_target.lua';
+        const relocated = hostValidators.validateLuaReferences(
+            { reference: wrong, entries: new Map() },
+            attrib,
+        );
+        assert(relocated.some((i) => i.kind === 'relocated_ref' && i.path === wrong),
+            'host profile should report relocated_ref: ' + JSON.stringify(relocated));
+
+        const noRoot = hostValidators.validateLuaReferences(
+            { reference: 'missing/root.lua', entries: new Map() },
+            null,
+        );
+        assert(noRoot.some((i) => i.kind === 'invalid_reference' && i.key === 'GameData'));
+    } finally {
+        fs.rmSync(attrib, { recursive: true, force: true });
+    }
 });

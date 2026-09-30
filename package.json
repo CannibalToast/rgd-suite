@@ -2,7 +2,7 @@
   "name": "rgd-suite",
   "displayName": "RGD Suite",
   "description": "Corsix, but for VS Code! Complete toolkit for Relic Game Data (RGD) files — table editor, Lua↔RGD conversion, SGA extraction, parity checker, and CLI commands for Dawn of War / Company of Heroes modding.",
-  "version": "1.9.7",
+  "version": "1.9.8",
   "publisher": "CannibalToast",
   "repository": {
     "type": "git",
@@ -748,7 +748,7 @@
     }
   },
   "scripts": {
-    "test": "node test/roundtrip.js && node test/validators.test.js && node test/task-scheduling.test.js && node test/batch-validate-ui.test.js && node test/batch-validate-worker.test.js && node test/package-menu.test.js && node test/cli-parity.test.js && node test/sga-extract-safe.test.js && node test/table-diff.test.js && node test/git-filter.test.js && node test/rename-rewrite.test.js && node test/compact-requirements.test.js && node test/tga-decode.test.js && node test/dds-decode.test.js",
+    "test": "node test/roundtrip.js && node test/validators.test.js && node test/task-scheduling.test.js && node test/batch-validate-ui.test.js && node test/batch-validate-worker.test.js && node test/package-menu.test.js && node test/cli-parity.test.js && node test/sga-extract-safe.test.js && node test/table-diff.test.js && node test/git-filter.test.js && node test/rename-rewrite.test.js && node test/compact-requirements.test.js && node test/tga-decode.test.js && node test/dds-decode.test.js && node test/consolidation.test.js",
     "build": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node16 --minify --legal-comments=none --resolve-extensions=.ts,.js --tsconfig=tsconfig.json",
     "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node16 --sourcemap --resolve-extensions=.ts,.js --tsconfig=tsconfig.json --watch",
     "package": "vsce package --no-dependencies && node -e \"const {execSync,version}=require('child_process'),p=require('./package.json');const src='rgd-suite-'+p.version+'.vsix';require('fs').copyFileSync(src,'rgd-suite-latest.vsix');console.log('Copied '+src+' -> rgd-suite-latest.vsix')\"",

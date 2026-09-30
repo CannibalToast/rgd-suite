@@ -3,79 +3,12 @@
  * Tests for rename-pair path rewrite helpers (mirrors comfortCommands logic).
  */
 const assert = require('assert');
-const path = require('path');
-const fs = require('fs');
-const esbuild = require('esbuild');
-const os = require('os');
+const { loadTs } = require('./load-ts');
 
 // Compile comfortCommands helpers out of the TS source via esbuild for unit use.
 // Simpler: reimplement the pure functions here in lockstep with the source
 // (same approach as table-diff tests) and assert contract documented in source.
-
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function buildRenameReplacements(oldRelNoExt, newRelNoExt) {
-  const oldFwd = oldRelNoExt.replace(/\\/g, '/');
-  const newFwd = newRelNoExt.replace(/\\/g, '/');
-  const oldBack = oldFwd.replace(/\//g, '\\');
-  const newBack = newFwd.replace(/\//g, '\\');
-  const oldBase = path.posix.basename(oldFwd);
-  const newBase = path.posix.basename(newFwd);
-  const pairs = [];
-  const add = (from, to) => {
-    if (from && to && from !== to) pairs.push({ from, to });
-  };
-  for (const [o, n] of [[oldFwd, newFwd], [oldBack, newBack]]) {
-    add(o, n);
-    add(o + '.rgd', n + '.rgd');
-    add(o + '.lua', n + '.lua');
-  }
-  add('data/attrib/' + oldFwd, 'data/attrib/' + newFwd);
-  if (oldBase.length >= 4 && oldBase !== newBase) {
-    add(oldBase + '.rgd', newBase + '.rgd');
-    add(oldBase + '.lua', newBase + '.lua');
-    add(oldBase, newBase);
-  }
-  pairs.sort((a, b) => b.from.length - a.from.length);
-  const seen = new Set();
-  return pairs.filter((p) => {
-    if (seen.has(p.from)) return false;
-    seen.add(p.from);
-    return true;
-  });
-}
-
-function applyPathReplacements(text, replacements) {
-  let out = text;
-  let count = 0;
-  const samples = [];
-  for (const { from, to } of replacements) {
-    const isBareStem =
-      !from.includes('/') && !from.includes('\\') && !/\.(rgd|lua|nil)$/i.test(from);
-    if (isBareStem) {
-      const re = new RegExp(
-        `(^|[/\\\\."'])(${escapeRegExp(from)})(?=$|[/\\\\."'])`,
-        'gi',
-      );
-      out = out.replace(re, (m, pre, stem) => {
-        count++;
-        if (samples.length < 5) samples.push(`${stem} → ${to}`);
-        return pre + to;
-      });
-    } else if (out.includes(from)) {
-      const parts = out.split(from);
-      const n = parts.length - 1;
-      if (n > 0) {
-        count += n;
-        if (samples.length < 5) samples.push(`${from} → ${to}`);
-        out = parts.join(to);
-      }
-    }
-  }
-  return { text: out, count, samples };
-}
+const { buildRenameReplacements, applyPathReplacements } = loadTs('src/comfortCommands.ts');
 
 function test(name, fn) {
   try {
@@ -126,6 +59,37 @@ test('data/attrib prefixed forms', () => {
   const src = 'Reference("data/attrib/sbps/races/foo")';
   const r = applyPathReplacements(src, reps);
   assert.ok(r.text.includes('data/attrib/sbps/races/bar'));
+});
+
+test('.nil sentinel variants are generated and rewritten', () => {
+  const reps = buildRenameReplacements('ebps/races/soldier', 'ebps/races/veteran');
+  assert.ok(reps.some((p) => p.from === 'ebps/races/soldier.nil' && p.to === 'ebps/races/veteran.nil'));
+  const r = applyPathReplacements('Inherit([[ebps/races/soldier.nil]])', reps);
+  assert.ok(r.text.includes('ebps/races/veteran.nil'), 'expected .nil path rewritten: ' + r.text);
+});
+
+test('attrib/ and data\\attrib\\ prefixed forms in both separators', () => {
+  const reps = buildRenameReplacements('sbps/races/soldier', 'sbps/races/veteran');
+  for (const from of [
+    'data/attrib/sbps/races/soldier',
+    'data\\attrib\\sbps\\races\\soldier',
+    'attrib/sbps/races/soldier',
+    'attrib\\sbps\\races\\soldier',
+  ]) {
+    assert.ok(reps.some((p) => p.from === from), 'missing replacement pair for ' + from);
+  }
+  const src = 'Reference([[data\\attrib\\sbps\\races\\soldier]]) and Reference([[attrib/sbps/races/soldier.lua]])';
+  const r = applyPathReplacements(src, reps);
+  assert.ok(r.text.includes('data\\attrib\\sbps\\races\\veteran'), r.text);
+  assert.ok(r.text.includes('attrib/sbps/races/veteran.lua'), r.text);
+});
+
+test('mixed-case paths fall back to case-insensitive replacement', () => {
+  const reps = buildRenameReplacements('ebps/races/soldier', 'ebps/races/veteran');
+  const src = 'Reference([[EBPS/RACES/SOLDIER.RGD]])';
+  const r = applyPathReplacements(src, reps);
+  assert.ok(r.count >= 1, 'expected case-insensitive replacement, got ' + r.count);
+  assert.ok(r.text.includes('ebps/races/veteran.rgd'), r.text);
 });
 
 if (process.exitCode) process.exit(process.exitCode);

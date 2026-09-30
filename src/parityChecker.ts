@@ -4,9 +4,9 @@ import * as fs from "fs";
 import { parseRgd } from "../bundled/rgd-tools/dist/reader";
 import { luaToRgdResolved } from "../bundled/rgd-tools/dist/luaFormat";
 import { findAttribBase, makeRgdParentLoader } from "./attribUtils";
+import { FlatScalar, flattenRgd as flattenRgdTable } from "./tableDiff";
 import {
   RgdTable,
-  RgdDataType,
   HashDictionary,
 } from "../bundled/rgd-tools/dist/types";
 import { DictionaryManager } from "./dictionaryManager";
@@ -59,40 +59,7 @@ function flattenRgd(
   prefix = "",
   result?: FlatMap,
 ): FlatMap {
-  // Pass the target Map by reference so nested tables append directly
-  // instead of allocating-and-copying per level (Tier 3 #18).
-  const out = result ?? new Map<string, FlatEntry>();
-  for (const entry of table.entries) {
-    const k = entry.name ?? `#${entry.hash.toString(16).padStart(8, "0")}`;
-    const full = prefix ? `${prefix}.${k}` : k;
-    switch (entry.type) {
-      case RgdDataType.Table:
-      case RgdDataType.TableInt: {
-        const sub = entry.value as RgdTable;
-        if (!sub) break;
-        flattenRgd(sub, dict, full, out);
-        break;
-      }
-      case RgdDataType.Float:
-        out.set(full, { type: "float", value: entry.value as number });
-        break;
-      case RgdDataType.Integer:
-        out.set(full, { type: "int", value: entry.value as number });
-        break;
-      case RgdDataType.Bool:
-        out.set(full, { type: "bool", value: entry.value as boolean });
-        break;
-      case RgdDataType.String:
-      case RgdDataType.WString:
-        // Skip $REF entries — these are reference-path metadata, not comparable data values
-        if (k === "$REF") break;
-        out.set(full, { type: "string", value: entry.value as string });
-        break;
-      case RgdDataType.NoData:
-        break;
-    }
-  }
-  return out;
+  return flattenRgdTable(table, prefix, result as Map<string, FlatScalar>) as FlatMap;
 }
 
 function normRef(p: string): string {

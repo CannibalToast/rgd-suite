@@ -26,11 +26,12 @@ const {
     validateFilePath,
     validateLuaReferences,
     validateRgdReferences,
-    resolveAttribRefPath,
     stripUtf8Bom,
     stripUtf8BomFromFile,
 } = require('./validators');
 const { compactRequirements } = require('./requirements');
+const { createAttribLoaders } = require('./attribLoaders');
+const { walkFiles } = require('./fileWalk');
 
 // ── Argument parsing ─────────────────────────────────────────────────────
 
@@ -129,86 +130,24 @@ function defaultOutput(input, fromExt, toExt) {
 
 // ── Lua / RGD parent loaders ─────────────────────────────────────────────
 
+const cliLoaderTools = { readRgdFile, rgdToLua, parseLuaToTable, luaToRgdResolved };
+
 function makeLuaFileLoader(attribBase, dict) {
-    const cache = new Map();
-    return function loader(refPath) {
-        if (!attribBase) return null;
-
-        // Try .lua first (the canonical source form).
-        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
-        if (luaPath) {
-            if (cache.has(luaPath)) return cache.get(luaPath);
-            if (fs.existsSync(luaPath)) {
-                const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
-                const c = fixed.buffer.toString('utf8');
-                cache.set(luaPath, c);
-                return c;
-            }
-        }
-
-        // Fall back to a compiled .rgd, converting it to Lua text.
-        const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
-        if (rgdPath && fs.existsSync(rgdPath)) {
-            const c = rgdToLua(readRgdFile(rgdPath, dict));
-            cache.set(rgdPath, c);
-            return c;
-        }
-
-        // Remember that this reference is missing so repeated lookups don't
-        // keep hitting the disk / index.
-        const cacheKey = luaPath || rgdPath;
-        if (cacheKey) cache.set(cacheKey, null);
-        return null;
-    };
+    return createAttribLoaders(cliLoaderTools, dict).makeLuaFileLoader(attribBase);
 }
 
 function makeParentLoader(attribBase, dict) {
-    const fileLoader = makeLuaFileLoader(attribBase, dict);
-    return async (refPath) => {
-        const code = fileLoader(refPath);
-        return code ? parseLuaToTable(code, fileLoader) : null;
-    };
+    return createAttribLoaders(cliLoaderTools, dict).makeLuaParentLoader(attribBase);
 }
 
 function makeRgdParentLoader(attribBase, dict) {
-    const self = async (refPath) => {
-        if (!attribBase) return null;
-
-        // Prefer an already-compiled .rgd parent.
-        const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
-        if (rgdPath && fs.existsSync(rgdPath)) return readRgdFile(rgdPath, dict).gameData;
-
-        // Fall back to a .lua parent and resolve its own inheritance.
-        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
-        if (luaPath && fs.existsSync(luaPath)) {
-            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
-            const code = fixed.buffer.toString('utf8');
-            const { gameData } = await luaToRgdResolved(code, dict, self);
-            return gameData;
-        }
-
-        return null;
-    };
-    return self;
+    return createAttribLoaders(cliLoaderTools, dict).makeRgdParentLoader(attribBase);
 }
 
 // ── Recursive walker ─────────────────────────────────────────────────────
 
 async function collectFiles(folder, ext) {
-    const results = [];
-    const stack = [folder];
-    while (stack.length) {
-        const dir = stack.pop();
-        let entries;
-        try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); }
-        catch { continue; }
-        for (const e of entries) {
-            const full = path.join(dir, e.name);
-            if (e.isDirectory()) stack.push(full);
-            else if (e.isFile() && e.name.toLowerCase().endsWith(ext)) results.push(full);
-        }
-    }
-    return results;
+    return walkFiles(folder, Array.isArray(ext) ? ext : [ext], { grouped: Array.isArray(ext) });
 }
 
 // ── Parity checker helpers ─────────────────────────────────────────────────
@@ -408,11 +347,7 @@ async function validateTarget(target, dict, attribBase, format) {
     const resolved = path.resolve(target);
     const stat = fs.statSync(resolved);
     const files = stat.isDirectory()
-        ? [
-            ...(await collectFiles(resolved, '.lua')),
-            ...(await collectFiles(resolved, '.rgd')),
-            ...(await collectFiles(resolved, '.rgd.txt')),
-        ]
+        ? await collectFiles(resolved, ['.lua', '.rgd', '.rgd.txt'])
         : [resolved];
     const results = [];
     for (const file of files) results.push(await validateOneFile(file, dict, attribBase));
@@ -816,6 +751,82 @@ const COMMANDS = {
         // Must exit 0 — git treats any nonzero status as "external diff died".
     },
 
+    // Wires the rgd filter + textconv in the current repo (or --global) to this CLI, then
+    // rewrites .rgd files a pre-setup checkout left as text back to binary.
+    async 'git-setup'(argv) {
+        const { execFileSync } = require('child_process');
+        const git = (args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: Infinity });
+        const scope = argv.includes('--global') ? '--global' : '--local';
+        const root = git(['rev-parse', '--show-toplevel']).trim();
+        const cli = `node "${__filename.replace(/\\/g, '/')}"`;
+        const config = {
+            'diff.rgd.textconv': `${cli} to-text -o -`,
+            'diff.rgd.cachetextconv': 'true',
+            'filter.rgd.clean': `${cli} to-text - -o -`,
+            'filter.rgd.smudge': `${cli} from-text - -o -`,
+            'filter.rgd.required': 'true',
+        };
+        for (const [key, value] of Object.entries(config)) git(['-C', root, 'config', scope, key, value]);
+
+        const attrs = path.join(root, '.gitattributes');
+        if (!/^\*\.rgd\b.*filter=rgd/m.test(fs.existsSync(attrs) ? fs.readFileSync(attrs, 'utf8') : '')) {
+            console.error(`warning: add '*.rgd -text filter=rgd diff=rgd' to ${attrs} — the filter stays inactive until you do`);
+        }
+
+        // Clean files go back through git; edited files are converted in place, which keeps
+        // their edits and correctly leaves them showing as modified until committed.
+        const dict = getDict(argv);
+        const isBinaryFile = abs => {
+            let fd;
+            try { fd = fs.openSync(abs, 'r'); } catch { return false; }
+            try {
+                const header = Buffer.alloc(12);
+                return fs.readSync(fd, header, 0, 12, 0) === 12 && isRgdBinary(header);
+            } finally { fs.closeSync(fd); }
+        };
+        const tracked = git(['-C', root, 'ls-files', '-z', '--', '*.rgd']).split('\0').filter(Boolean);
+        // required=false here so one file the clean filter rejects aborts only itself
+        // (it lands in `edited` and fails conversion) instead of the whole scan.
+        const dirty = new Set(git(['-C', root, '-c', 'filter.rgd.required=false', 'diff', '--name-only', '-z', '--', '*.rgd']).split('\0').filter(Boolean));
+        const stale = tracked.filter(f => !dirty.has(f) && !isBinaryFile(path.join(root, f)));
+        const edited = tracked.filter(f => dirty.has(f) && !isBinaryFile(path.join(root, f)));
+        const failed = [];
+        for (const f of stale) {
+            // `git checkout` skips files its stat cache calls unchanged, so a stat-clean
+            // stale file would never be rewritten and the smudge filter would never run.
+            // Deleting first forces the rewrite; the backup rolls back a failed checkout.
+            const abs = path.join(root, f);
+            let backup;
+            try { backup = fs.readFileSync(abs); }
+            catch (err) { failed.push(`${f}: ${err.message}`); continue; }
+            try {
+                fs.rmSync(abs);
+                git(['-C', root, '--literal-pathspecs', 'checkout', '--', f]);
+            } catch (err) {
+                try { fs.writeFileSync(abs, backup); } catch { /* nothing left to save */ }
+                failed.push(`${f}: checkout failed: ${(err.message || String(err)).split('\n')[0]}`);
+                continue;
+            }
+            // smudge passes through text it can't convert (conflict markers, corrupt
+            // blobs) without failing — checkout exits 0 but the file stays text.
+            if (!isBinaryFile(abs)) failed.push(`${f}: still not binary after checkout`);
+        }
+        for (const f of edited) {
+            const abs = path.join(root, f);
+            if (!fs.existsSync(abs)) continue; // deleted locally — leave it gone
+            try {
+                const { gameData, version } = textToRgd(stripUtf8Bom(fs.readFileSync(abs, 'utf8')), dict);
+                fs.writeFileSync(abs, buildRgd(gameData, dict, version));
+            } catch (err) {
+                failed.push(`${f}: ${err.message}`);
+            }
+        }
+        const restored = [...stale, ...edited].filter(f => isBinaryFile(path.join(root, f))).length;
+        console.log(`rgd git filter enabled (${scope}) for ${root}; restored ${restored} of ${tracked.length} .rgd file(s) to binary`);
+        if (edited.length) console.log(`${edited.length} file(s) had local edits and stay modified until committed`);
+        for (const f of failed) console.error(`  failed: ${f}`);
+    },
+
     async 'compact-requirements'(argv) {
         const [input] = positionals(argv, VALUE_FLAGS);
         if (!input) usage('compact-requirements <input.rgd> [-o output.rgd] [--dry-run]');
@@ -865,6 +876,7 @@ Commands:
   validate <file|folder>           Validate encoding, paths and references
   table-diff <input.rgd>           Diff working RGD vs a git ref, or another .rgd file
   git-diff <7 git args>            External diff driver — emits key-level diff (diff.rgd.command)
+  git-setup [--global]             Enable the rgd git filter/textconv for the current repo
   compact-requirements <input.rgd> Drop required_none slots and renumber
                                    required_* children contiguously
                                    [-o output.rgd] [--dry-run]

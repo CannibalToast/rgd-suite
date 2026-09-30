@@ -16,10 +16,10 @@ const { RgdDataType }                        = require(path.join(dist, 'types.js
 const {
     validateEncoding,
     validateRgdReferences,
-    resolveAttribRefPath,
     stripUtf8Bom,
     stripUtf8BomFromFile,
 } = require(path.join(__dirname, '..', 'cli', 'validators.js'));
+const { createAttribLoaders } = require(path.join(__dirname, '..', 'cli', 'attribLoaders.js'));
 
 const dict = createAndLoadDictionaries(workerData.dictPaths || []);
 
@@ -63,26 +63,16 @@ function findAttribBase(filePath) {
 }
 
 
+const attribLoaders = createAttribLoaders(
+    {
+        readRgdFile: (file, d) => parseRgd(fs.readFileSync(file), d),
+        luaToRgdResolved,
+    },
+    dict,
+);
+
 function makeRgdParentLoader(attribBase) {
-    const self = async (refPath) => {
-        if (!attribBase) return null;
-
-        const rgdPath = resolveAttribRefPath(refPath, attribBase, '.rgd');
-        if (rgdPath && fs.existsSync(rgdPath)) {
-            return parseRgd(fs.readFileSync(rgdPath), dict).gameData;
-        }
-
-        const luaPath = resolveAttribRefPath(refPath, attribBase, '.lua');
-        if (luaPath && fs.existsSync(luaPath)) {
-            const fixed = stripUtf8BomFromFile(luaPath, fs.readFileSync(luaPath));
-            const code = fixed.buffer.toString('utf8');
-            const { gameData } = await luaToRgdResolved(code, dict, self);
-            return gameData;
-        }
-
-        return null;
-    };
-    return self;
+    return attribLoaders.makeRgdParentLoader(attribBase);
 }
 
 function flattenRgd(table, prefix, out) {

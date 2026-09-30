@@ -370,10 +370,7 @@ export function registerComfortCommands(
         cancellable: true,
       },
       async (progress, token) => {
-        const files = [
-          ...(await collectFilesAsync(base, ".lua")),
-          ...(await collectFilesAsync(base, ".rgd")),
-        ];
+        const files = await collectFilesAsync(base, [".lua", ".rgd"]);
         let hits = 0;
         let scanned = 0;
         for (const f of files) {
@@ -746,10 +743,7 @@ export function registerComfortCommands(
     });
     if (pattern === undefined) return;
     const needle = pattern.trim().toLowerCase();
-    const files = [
-      ...(await collectFilesAsync(folder, ".rgd")),
-      ...(await collectFilesAsync(folder, ".lua")),
-    ];
+    const files = await collectFilesAsync(folder, [".rgd", ".lua"]);
     const hits = files
       .filter((f) => !needle || path.basename(f).toLowerCase().includes(needle))
       .slice(0, 200)
@@ -1239,10 +1233,7 @@ async function renamePairWithOptionalRewrite(
         cancellable: true,
       },
       async (_p, token) => {
-        const files = [
-          ...(await collectFilesAsync(attribBase, ".lua")),
-          ...(await collectFilesAsync(attribBase, ".rgd")),
-        ];
+        const files = await collectFilesAsync(attribBase, [".lua", ".rgd"]);
         for (const f of files) {
           if (token.isCancellationRequested) break;
           try {
