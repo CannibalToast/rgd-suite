@@ -3,3 +3,5 @@
 *.vsix binary
 dictionaries/*.TXT binary
 *.rgd -text filter=rgd diff=rgd
+# Test fixtures must stay raw binary on every machine (CI has no filter installed)
+test/fixtures/*.rgd binary -filter
